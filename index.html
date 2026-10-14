@@ -1,0 +1,733 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="robots" content="noindex,nofollow">
+<meta name="theme-color" content="#000000">
+<title>Appel vidéo</title>
+<style>
+  :root { --fond:#000; --texte:#f2f2f2; --doux:#9a9a9a; --rouge:#e5372e; --vert:#2fbf5b; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html, body { margin:0; height:100%; background:var(--fond); color:var(--texte);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; overflow:hidden; }
+  .ecran { position:fixed; inset:0; }
+  .cache { display:none !important; }
+
+  /* accueil / attente / fin */
+  .page { display:flex; flex-direction:column; justify-content:center; gap:18px;
+    padding:24px max(20px, env(safe-area-inset-right)) 24px max(20px, env(safe-area-inset-left));
+    max-width:460px; margin:0 auto; height:100%; }
+  .page h1 { font-size:24px; margin:0; font-weight:650; }
+  .page p { margin:0; color:var(--doux); line-height:1.45; font-size:15px; }
+  .page ol { margin:0; padding-left:20px; color:var(--doux); line-height:1.5; font-size:15px; }
+  .bouton { appearance:none; border:0; border-radius:14px; padding:16px; font-size:17px; font-weight:600;
+    background:var(--vert); color:#fff; width:100%; cursor:pointer; }
+  .bouton.second { background:#2a2a2a; }
+  .lien { font-family:ui-monospace,Menlo,monospace; font-size:13px; background:#151515; border:1px solid #2a2a2a;
+    border-radius:10px; padding:12px; word-break:break-all; user-select:all; }
+  .rangee { display:flex; gap:10px; }
+  .erreur { color:#ff8a80 !important; }
+
+  /* appel */
+  #distant { position:absolute; inset:0; width:100%; height:100%; object-fit:cover; background:#0b0b0b; }
+  #placeDistant { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+    color:#666; font-size:15px; text-align:center; padding:30px; }
+  #barreHaut { position:absolute; top:0; left:0; right:0; padding:calc(10px + env(safe-area-inset-top)) 16px 10px;
+    text-align:center; font-size:14px; color:#ddd; background:linear-gradient(#000a, #0000); pointer-events:none; }
+  #barreHaut b { display:block; font-size:16px; font-weight:600; color:#fff; }
+  #vignette { position:absolute; right:calc(12px + env(safe-area-inset-right)); bottom:calc(112px + env(safe-area-inset-bottom));
+    width:28vw; max-width:170px; aspect-ratio:3/4; border-radius:12px; overflow:hidden; background:#1c1c1c;
+    box-shadow:0 4px 18px #0008; }
+  #vignette canvas, #vignette video { width:100%; height:100%; display:block; object-fit:cover; }
+  #moiVideo { transform:scaleX(-1); }
+  #commandes { position:absolute; left:0; right:0; bottom:0; display:flex; justify-content:center; gap:28px;
+    padding:16px 16px calc(22px + env(safe-area-inset-bottom)); }
+  .rond { width:62px; height:62px; border-radius:50%; border:0; display:flex; align-items:center; justify-content:center;
+    background:#ffffff2e; color:#fff; cursor:pointer; backdrop-filter:blur(8px); -webkit-backdrop-filter:blur(8px); }
+  .rond.coupe { background:#fff; color:#111; }
+  .rond.rouge { background:var(--rouge); }
+  .rond svg { width:28px; height:28px; }
+  #pastille { position:absolute; top:calc(14px + env(safe-area-inset-top)); left:14px; width:9px; height:9px;
+    border-radius:50%; background:#ffffff30; }
+  #pastille.vu { background:var(--rouge); box-shadow:0 0 6px var(--rouge); }
+  #pastille.fini { background:transparent; border:1.5px solid #ffffff60; }
+  #pastille.annule { background:#c9a227; }
+  #debug { position:absolute; left:8px; top:calc(60px + env(safe-area-inset-top)); margin:0; font:11px/1.35 ui-monospace,Menlo,monospace;
+    color:#7CFC9A; background:#000b; padding:6px 8px; border-radius:6px; white-space:pre; pointer-events:none; }
+  #rejouer { position:absolute; left:12px; bottom:calc(112px + env(safe-area-inset-bottom)); width:auto; padding:10px 14px; font-size:14px; }
+  #toucherSon { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; background:#000a; font-size:17px; }
+  /* source caméra : doit rester "visible" pour iOS, mais invisible */
+  #cam { position:fixed; left:0; top:0; width:2px; height:2px; opacity:0; pointer-events:none; }
+</style>
+</head>
+<body>
+
+<video id="cam" playsinline muted autoplay></video>
+
+<section id="accueil" class="ecran">
+  <div class="page" id="pageHote">
+    <h1>Visio Halloween · test V0</h1>
+    <ol>
+      <li>Crée l'appel, puis envoie le lien à la personne.</li>
+      <li>Celle qui ouvre le lien est la <b>cible</b> : le Watcher apparaît derrière elle, dans <b>sa</b> petite vignette, de 10 à 18 s après la connexion.</li>
+      <li>Ne la préviens pas. Regarde-la : se retourne-t-elle ?</li>
+    </ol>
+    <button class="bouton" id="btCreer">Créer l'appel</button>
+    <p id="msgHote"></p>
+  </div>
+  <div class="page cache" id="pageCible">
+    <h1>Expérience Halloween en visio 🎃</h1>
+    <p>Un appel vidéo avec un effet visuel fictif. Autorise la caméra et le micro quand ton téléphone le demande.</p>
+    <button class="bouton" id="btRejoindre">Rejoindre l'appel</button>
+    <p id="msgCible"></p>
+  </div>
+  <div class="page cache" id="pageSolo">
+    <h1>Test solo du Watcher</h1>
+    <p>Sans appel : ta caméra dans la vignette, l'effet joue à 10 s. Pour régler le réalisme sur un seul téléphone.</p>
+    <button class="bouton" id="btSolo">Démarrer</button>
+    <p id="msgSolo"></p>
+  </div>
+</section>
+
+<section id="attente" class="ecran cache">
+  <div class="page">
+    <h1>Envoie ce lien</h1>
+    <p>Dès que la personne l'ouvre et rejoint, l'appel démarre ici.</p>
+    <div class="lien" id="lien"></div>
+    <div class="rangee">
+      <button class="bouton" id="btPartager">Partager</button>
+      <button class="bouton second" id="btCopier">Copier</button>
+    </div>
+    <p id="msgAttente">Connexion au serveur…</p>
+  </div>
+</section>
+
+<section id="appel" class="ecran cache">
+  <video id="distant" playsinline autoplay></video>
+  <div id="placeDistant"></div>
+  <div id="barreHaut"><b id="nom">Appel vidéo</b><span id="chrono">Connexion…</span></div>
+  <div id="vignette"><canvas id="moi"></canvas><video id="moiVideo" class="cache" playsinline muted autoplay></video></div>
+  <div id="pastille" class="cache"></div>
+  <button class="bouton second cache" id="rejouer">Rejouer</button>
+  <div id="commandes">
+    <button class="rond" id="btMicro" aria-label="Micro">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+    </button>
+    <button class="rond rouge" id="btRaccrocher" aria-label="Raccrocher">
+      <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 9c-3.2 0-6.2.9-8.7 2.6-.6.4-.8 1.2-.5 1.9l1.1 2.1c.3.6 1 .9 1.7.7l2.6-.9c.6-.2 1-.8.9-1.4l-.2-1.6c1.9-.6 4.3-.6 6.2 0l-.2 1.6c-.1.6.3 1.2.9 1.4l2.6.9c.7.2 1.4-.1 1.7-.7l1.1-2.1c.3-.7.1-1.5-.5-1.9C18.2 9.9 15.2 9 12 9z"/></svg>
+    </button>
+  </div>
+  <pre id="debug" class="cache"></pre>
+  <div id="toucherSon" class="cache">Touchez pour activer le son</div>
+</section>
+
+<section id="fin" class="ecran cache">
+  <div class="page"><h1>Appel terminé</h1><p id="msgFin"></p></div>
+</section>
+
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script type="module">
+import { FilesetResolver, ImageSegmenter } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+
+// ───────────────────────── réglages ─────────────────────────
+const MP = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
+const MODELE = "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite";
+const PREFIXE = "watcher-v0-";
+// Chronologie, en secondes après la connexion de l'appel.
+const T = { apparition: 10, tete: 13, proche: 16, fin: 18 };
+const FONDU_ENTREE = 1.6;   // le Watcher 1 émerge lentement
+const BASCULE = 0.9;        // tête baissée -> tête relevée
+const ATTENTE_MAX = 8;      // pas de place libre derrière la personne : on attend, puis on renonce
+const HAUTEUR = 0.44;       // hauteur du Watcher (fraction de la vignette) quand il est « au fond »
+const PROCHE = 0.12;        // grossissement à 16-18 s
+
+const P = new URLSearchParams(location.search);
+const SALLE = P.get("r");
+const SOLO = P.has("solo");
+const DEBUG = P.has("debug");
+const ROLE = SOLO ? "solo" : SALLE ? "cible" : "hote";
+const $ = id => document.getElementById(id);
+
+// ───────────────────────── interface ─────────────────────────
+function montrer(id) {
+  for (const e of ["accueil", "attente", "appel", "fin"]) $(e).classList.toggle("cache", e !== id);
+}
+$("pageHote").classList.toggle("cache", ROLE !== "hote");
+$("pageCible").classList.toggle("cache", ROLE !== "cible");
+$("pageSolo").classList.toggle("cache", ROLE !== "solo");
+if (DEBUG) $("debug").classList.remove("cache");
+
+let flux = null, peer = null, conn = null, appelEnCours = null;
+let tConnexion = null;        // performance.now() à la connexion
+const tAppel = () => tConnexion == null ? null : (performance.now() - tConnexion) / 1000;
+
+async function ouvrirCamera() {
+  return navigator.mediaDevices.getUserMedia({
+    video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 30, max: 30 } },
+    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+  });
+}
+function erreurCamera(e, cible) {
+  cible.textContent = "Caméra ou micro refusé (" + (e.name || e.message) + "). Autorise-les dans le navigateur puis recharge la page.";
+  cible.classList.add("erreur");
+}
+
+function chrono() {
+  const t = tAppel();
+  if (t != null) {
+    const s = Math.floor(t);
+    $("chrono").textContent = String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
+  }
+  setTimeout(chrono, 500);
+}
+chrono();
+
+async function garderEcranAllume() {
+  try { await navigator.wakeLock?.request("screen"); } catch {}
+}
+
+function jouerDistant(s) {
+  const v = $("distant");
+  if (v.srcObject !== s) v.srcObject = s;
+  v.play().catch(() => {
+    $("toucherSon").classList.remove("cache");
+    $("toucherSon").onclick = () => { v.play(); $("toucherSon").classList.add("cache"); };
+  });
+}
+
+function brancherAppel(call) {
+  appelEnCours = call;
+  call.on("stream", s => {
+    jouerDistant(s);
+    $("placeDistant").classList.add("cache");
+    if (tConnexion == null) tConnexion = performance.now();
+    montrer("appel");
+    garderEcranAllume();
+  });
+  // une tentative ratée (l'autre pas encore là) se ferme aussi : seul l'appel établi raccroche
+  call.on("close", () => { if (call === appelEnCours && tConnexion != null) raccrocher(); });
+  call.on("error", e => journal("appel: " + e.type));
+  const pc = call.peerConnection;
+  if (pc) pc.addEventListener("iceconnectionstatechange", () => {
+    etatIce = pc.iceConnectionState;
+    if (etatIce === "failed") $("chrono").textContent = "Connexion réseau impossible";
+  });
+}
+
+function raccrocher() {
+  if ($("fin").classList.contains("cache") === false) return;
+  try { conn?.send({ ev: "raccroche" }); } catch {}
+  try { appelEnCours?.close(); } catch {}
+  try { peer?.destroy(); } catch {}
+  flux?.getTracks().forEach(t => t.stop());
+  montrer("fin");
+}
+$("btRaccrocher").onclick = raccrocher;
+$("btMicro").onclick = () => {
+  const a = flux?.getAudioTracks()[0];
+  if (!a) return;
+  a.enabled = !a.enabled;
+  $("btMicro").classList.toggle("coupe", !a.enabled);
+};
+
+let etatIce = "—", derniersEvenements = [];
+function journal(t) { derniersEvenements.push(t); if (derniersEvenements.length > 4) derniersEvenements.shift(); }
+
+// ───────────────────────── organisateur ─────────────────────────
+$("btCreer").onclick = async () => {
+  try { flux = await ouvrirCamera(); } catch (e) { return erreurCamera(e, $("msgHote")); }
+  const salle = Math.random().toString(36).slice(2, 8) + Math.random().toString(36).slice(2, 6);
+  const lien = location.origin + location.pathname + "?r=" + salle;
+  $("lien").textContent = lien;
+  $("btPartager").onclick = () => navigator.share ? navigator.share({ title: "Appel vidéo", url: lien }).catch(() => {}) : $("btCopier").click();
+  $("btCopier").onclick = async () => {
+    try { await navigator.clipboard.writeText(lien); $("btCopier").textContent = "Copié ✓"; } catch { $("btCopier").textContent = "Sélectionne le lien"; }
+  };
+  montrer("attente");
+
+  const mv = $("moiVideo");
+  mv.srcObject = flux; mv.classList.remove("cache"); $("moi").classList.add("cache");
+  mv.play().catch(() => {});
+  $("pastille").classList.remove("cache");
+
+  peer = new Peer(PREFIXE + salle, { debug: 1 });
+  peer.on("open", () => $("msgAttente").textContent = "En attente de la personne…");
+  peer.on("call", call => { call.answer(flux); brancherAppel(call); });
+  peer.on("connection", c => { conn = c; c.on("data", recevoirHote); });
+  peer.on("disconnected", () => { try { peer.reconnect(); } catch {} });
+  peer.on("error", e => { $("msgAttente").textContent = "Erreur : " + e.type; journal(e.type); });
+};
+
+let infoCible = {};
+function recevoirHote(m) {
+  if (!m || !m.ev) return;
+  const p = $("pastille");
+  if (m.ev === "apparition") { p.className = "vu"; }
+  else if (m.ev === "disparu") { p.className = "fini"; }
+  else if (m.ev === "annule") { p.className = "annule"; }
+  else if (m.ev === "raccroche") { raccrocher(); }
+  else if (m.ev === "etat") { infoCible = m; }
+  if (m.ev !== "etat") journal("cible: " + m.ev + (m.raison ? " (" + m.raison + ")" : "") + " @" + (tAppel() ?? 0).toFixed(1) + "s");
+}
+
+// ───────────────────────── cible ─────────────────────────
+$("btRejoindre").onclick = async () => {
+  try { flux = await ouvrirCamera(); } catch (e) { return erreurCamera(e, $("msgCible")); }
+  demarrerVignette();
+  montrer("appel");
+  $("placeDistant").textContent = "Connexion…";
+  peer = new Peer({ debug: 1 });
+  const hote = PREFIXE + SALLE;
+  let tentatives = 0;
+  const appeler = () => {
+    tentatives++;
+    brancherAppel(peer.call(hote, flux));
+    conn = peer.connect(hote, { reliable: true });
+  };
+  peer.on("open", appeler);
+  peer.on("disconnected", () => { try { peer.reconnect(); } catch {} });
+  peer.on("error", e => {
+    if (e.type === "peer-unavailable" && tConnexion == null) {
+      $("placeDistant").textContent = "En attente de l'autre personne…";
+      if (tentatives < 90) setTimeout(appeler, 2000);
+    } else {
+      $("placeDistant").textContent = "Erreur de connexion : " + e.type;
+      journal(e.type);
+    }
+  });
+};
+function envoyer(ev, extra = {}) {
+  journal(ev + (extra.raison ? " (" + extra.raison + ")" : "") + " @" + (tAppel() ?? 0).toFixed(1) + "s");
+  try { if (conn?.open) conn.send({ ev, ...extra }); } catch {}
+}
+
+// ───────────────────────── solo ─────────────────────────
+$("btSolo").onclick = async () => {
+  try { flux = await ouvrirCamera(); } catch (e) { return erreurCamera(e, $("msgSolo")); }
+  flux.getAudioTracks().forEach(t => t.stop());
+  demarrerVignette();
+  montrer("appel");
+  $("placeDistant").textContent = "Mode solo — pas de correspondant.\nRegarde ta vignette.";
+  $("rejouer").classList.remove("cache");
+  $("rejouer").onclick = () => { reinitialiserEffet(); tConnexion = performance.now(); };
+  tConnexion = performance.now();
+  garderEcranAllume();
+};
+
+// ═════════════════════════ LA VIGNETTE TRUQUÉE ═════════════════════════
+// Rendu local uniquement : FOND (image caméra) + WATCHER + PERSONNE détourée par-dessus.
+// Le correspondant reçoit le flux caméra brut.
+
+const cam = $("cam");
+const cv = $("moi");
+const ctx = cv.getContext("2d");
+let W = 0, H = 0;
+
+// segmentation
+let segmenteur = null, etatSeg = "chargement…";
+const SEG_W = 256;
+const segIn = document.createElement("canvas");
+const segCtx = segIn.getContext("2d");
+let mw = 0, mh = 0, conf = null, tenu = null, tmp = null, dil = null;
+const masqueCv = document.createElement("canvas");
+const masqueCtx = masqueCv.getContext("2d");
+let masqueImg = null, dernierTs = 0, nbSeg = 0, nbRendu = 0, aire = 0;
+// personne détourée
+const persCv = document.createElement("canvas");
+const persCtx = persCv.getContext("2d");
+
+async function chargerSegmenteur() {
+  try {
+    const fs = await FilesetResolver.forVisionTasks(MP);
+    const opts = delegate => ({
+      baseOptions: { modelAssetPath: MODELE, delegate },
+      runningMode: "VIDEO", outputConfidenceMasks: true, outputCategoryMask: false,
+    });
+    try { segmenteur = await ImageSegmenter.createFromOptions(fs, opts("GPU")); etatSeg = "GPU"; }
+    catch { segmenteur = await ImageSegmenter.createFromOptions(fs, opts("CPU")); etatSeg = "CPU"; }
+  } catch (e) {
+    etatSeg = "ÉCHEC " + (e.message || e);   // sans segmentation : aucun effet, jamais
+  }
+}
+if (ROLE !== "hote") chargerSegmenteur();
+
+const imgs = [new Image(), new Image()];
+imgs[0].src = "assets/watcher1.png";
+imgs[1].src = "assets/watcher2.png";
+const ASPECT = 158 / 720;
+
+let nouvelleImage = true, nbImagesCam = 0;
+function surveillerImages() {
+  if (cam.requestVideoFrameCallback) {
+    const f = () => { nouvelleImage = true; nbImagesCam++; cam.requestVideoFrameCallback(f); };
+    cam.requestVideoFrameCallback(f);
+  }
+}
+let dernierTemps = -1;
+
+function demarrerVignette() {
+  cam.srcObject = flux;
+  cam.play().catch(() => {});
+  surveillerImages();
+  requestAnimationFrame(rendu);
+}
+
+function dimensionner() {
+  const vw = cam.videoWidth, vh = cam.videoHeight;
+  const ech = 480 / Math.max(vw, vh);
+  const w = Math.round(vw * ech), h = Math.round(vh * ech);
+  if (w === W && h === H) return;
+  W = cv.width = persCv.width = w;
+  H = cv.height = persCv.height = h;
+  $("vignette").style.aspectRatio = w + " / " + h;
+  segIn.width = SEG_W; segIn.height = Math.round(SEG_W * h / w);
+}
+
+function segmenterImage() {
+  segCtx.drawImage(cam, 0, 0, segIn.width, segIn.height);
+  let ts = performance.now();
+  if (ts <= dernierTs) ts = dernierTs + 1;
+  dernierTs = ts;
+  segmenteur.segmentForVideo(segIn, ts, res => {
+    const m = res.confidenceMasks && res.confidenceMasks[0];
+    if (m) traiterMasque(m.getAsFloat32Array(), m.width, m.height);
+  });
+  nbSeg++;
+}
+
+// Masque prudent : on garde la personne un peu plus grande que ce que voit le modèle
+// (maintien temporel + dilatation) — mieux vaut cacher un bout de Watcher que le voir sur une épaule.
+function traiterMasque(f, w, h) {
+  if (w !== mw || h !== mh) {
+    mw = w; mh = h;
+    conf = new Float32Array(w * h); tenu = new Float32Array(w * h);
+    tmp = new Float32Array(w * h); dil = new Float32Array(w * h);
+    masqueCv.width = w; masqueCv.height = h;
+    masqueImg = masqueCtx.createImageData(w, h);
+  }
+  const n = w * h;
+  let a = 0;
+  for (let i = 0; i < n; i++) {
+    const v = f[i];
+    conf[i] = v;
+    const d = tenu[i] * 0.72;
+    tenu[i] = v > d ? v : d;
+    if (v > 0.5) a++;
+  }
+  aire = a / n;
+  const R = 2;
+  for (let y = 0; y < h; y++) {
+    const o = y * w;
+    for (let x = 0; x < w; x++) {
+      let m = 0;
+      const x0 = x - R < 0 ? 0 : x - R, x1 = x + R >= w ? w - 1 : x + R;
+      for (let k = x0; k <= x1; k++) { const v = tenu[o + k]; if (v > m) m = v; }
+      tmp[o + x] = m;
+    }
+  }
+  const px = masqueImg.data;
+  for (let y = 0; y < h; y++) {
+    const y0 = y - R < 0 ? 0 : y - R, y1 = y + R >= h ? h - 1 : y + R;
+    for (let x = 0; x < w; x++) {
+      let m = 0;
+      for (let k = y0; k <= y1; k++) { const v = tmp[k * w + x]; if (v > m) m = v; }
+      dil[y * w + x] = m;
+      let al = (m - 0.1) / 0.35;
+      al = al <= 0 ? 0 : al >= 1 ? 1 : al * al * (3 - 2 * al);
+      px[(y * w + x) * 4 + 3] = al * 255;
+    }
+  }
+  masqueCtx.putImageData(masqueImg, 0, 0);
+}
+
+// coordonnées vignette (miroir) -> masque
+const versMasqueX = x => Math.min(mw - 1, Math.max(0, Math.floor((1 - x / W) * mw)));
+const versMasqueY = y => Math.min(mh - 1, Math.max(0, Math.floor(y / H * mh)));
+
+function couverture(r) {
+  const xa = versMasqueX(r.x + r.w), xb = versMasqueX(r.x);
+  const ya = versMasqueY(r.y), yb = versMasqueY(r.y + r.h);
+  let n = 0, pers = 0, incert = 0;
+  for (let y = ya; y <= yb; y++) for (let x = xa; x <= xb; x++) {
+    const v = conf[y * mw + x];
+    n++;
+    if (v > 0.5) pers++;
+    if (v > 0.2 && v < 0.8) incert++;
+  }
+  return { personne: n ? pers / n : 1, incertain: n ? incert / n : 1 };
+}
+
+// Où mettre le Watcher : à côté de la tête, légèrement derrière l'épaule, côté le plus libre.
+function trouverPlace() {
+  if (!mw) return { raison: "pas de masque" };
+  let yTop = -1;
+  for (let y = 0; y < mh && yTop < 0; y++) {
+    let n = 0;
+    for (let x = 0; x < mw; x++) if (conf[y * mw + x] > 0.5) n++;
+    if (n > mw * 0.03) yTop = y;
+  }
+  if (yTop < 0) return { raison: "personne absente" };
+  if (yTop > mh * 0.6) return { raison: "personne trop basse" };
+  let x0 = mw, x1 = -1;
+  const yFin = Math.min(mh, yTop + Math.round(mh * 0.2));
+  for (let y = yTop; y < yFin; y++) for (let x = 0; x < mw; x++) {
+    if (conf[y * mw + x] > 0.5) { if (x < x0) x0 = x; if (x > x1) x1 = x; }
+  }
+  const gTete = (1 - (x1 + 1) / mw) * W, dTete = (1 - x0 / mw) * W;   // bords de la tête, à l'écran
+  const yTete = yTop / mh * H;
+  const h = H * HAUTEUR, w = h * ASPECT;
+  const ecart = W * 0.03;
+  const haut = Math.min(H * 0.3, Math.max(H * 0.05, yTete + H * 0.015));
+  const choix = [];
+  for (const cote of [1, -1]) {
+    const cx = cote > 0 ? dTete + ecart + w * 0.42 : gTete - ecart - w * 0.42;
+    if (cx - w * 0.3 < W * 0.02 || cx + w * 0.3 > W * 0.98) continue;
+    const tete = { x: cx - w * 0.2, y: haut, w: w * 0.4, h: h * 0.16 };
+    const c = couverture(tete);
+    if (c.personne > 0.08 || c.incertain > 0.3) continue;
+    choix.push({ cote, cx, haut, w, h, libre: cote > 0 ? W - dTete : gTete });
+  }
+  if (!choix.length) return { raison: "pas de place libre" };
+  choix.sort((a, b) => b.libre - a.libre);
+  return choix[0];
+}
+
+// ── la pièce : couleur, noir, grain ──
+const mini = document.createElement("canvas");
+mini.width = mini.height = 20;
+const miniCtx = mini.getContext("2d", { willReadFrequently: true });
+let piece = null, patchPrec = null, tPiece = 0;
+
+function mesurerPiece(boite) {
+  const rx = Math.max(0, boite.x - boite.w * 1.5), ry = Math.max(0, boite.y - boite.h * 0.1);
+  const rw = Math.min(W - rx, boite.w * 4), rh = Math.min(H - ry, boite.h * 0.9);
+  if (rw < 4 || rh < 4) return;
+  miniCtx.drawImage(cv, rx, ry, rw, rh, 0, 0, 20, 20);
+  const d = miniCtx.getImageData(0, 0, 20, 20).data;
+  const lums = []; let sr = 0, sg = 0, sb = 0;
+  for (let j = 0; j < 20; j++) for (let i = 0; i < 20; i++) {
+    const px = rx + (i + 0.5) / 20 * rw, py = ry + (j + 0.5) / 20 * rh;
+    if (mw && conf[versMasqueY(py) * mw + versMasqueX(px)] > 0.4) continue;   // pas la personne
+    const k = (j * 20 + i) * 4;
+    sr += d[k]; sg += d[k + 1]; sb += d[k + 2];
+    lums.push(0.2126 * d[k] + 0.7152 * d[k + 1] + 0.0722 * d[k + 2]);
+  }
+  if (lums.length < 25) return;
+  lums.sort((a, b) => a - b);
+  const n = lums.length;
+  const nouv = { r: sr / n, g: sg / n, b: sb / n, noir: lums[Math.floor(n * 0.08)], lum: lums.reduce((s, v) => s + v, 0) / n,
+                 bruit: piece ? piece.bruit : 3 };
+  // bruit caméra : écart image à image sur un carré de fond (médiane robuste aux mouvements)
+  const px = Math.round(Math.min(W - 40, Math.max(0, boite.x + boite.w / 2 - 20)));
+  const py = Math.round(Math.min(H - 40, Math.max(0, boite.y + boite.h * 0.25)));
+  const patch = ctx.getImageData(px, py, 40, 40).data;
+  if (patchPrec && patchPrec.x === px && patchPrec.y === py) {
+    const diffs = [];
+    for (let k = 0; k < patch.length; k += 8) diffs.push(Math.abs(patch[k + 1] - patchPrec.d[k + 1]));
+    diffs.sort((a, b) => a - b);
+    const s = 1.4826 * diffs[diffs.length >> 1] / 1.414;
+    nouv.bruit = Math.min(10, Math.max(1.5, s));
+  }
+  patchPrec = { x: px, y: py, d: patch };
+  if (!piece) piece = nouv;
+  else for (const k in nouv) piece[k] += (nouv[k] - piece[k]) * 0.3;
+}
+
+// ── fabrication du Watcher étalonné sur la pièce (3 variantes de grain par image) ──
+const petit = document.createElement("canvas"), petitCtx = petit.getContext("2d");
+const baseCv = document.createElement("canvas"), baseCtx = baseCv.getContext("2d", { willReadFrequently: true });
+function nouveauxCalques() { return [0, 1, 2].map(() => { const c = document.createElement("canvas"); return { c, x: c.getContext("2d") }; }); }
+const calques = [nouveauxCalques(), nouveauxCalques()];
+let calqueW = 0, calqueH = 0, tCalque = 0;
+
+function construireCalques(lw, lh, dist) {
+  calqueW = lw; calqueH = lh;
+  const R = piece;
+  const base = Math.min(R.noir * 0.8, R.lum * 0.35, 55);     // son noir = le noir de la pièce, un peu en dessous
+  const moy = (R.r + R.g + R.b) / 3 || 1;
+  const teinte = [R.r, R.g, R.b].map(c => 1 + (Math.min(1.3, Math.max(0.75, c / moy)) - 1) * 0.6);
+  const gain = 0.55 + 0.35 * (1 - dist);                      // plus proche = plus de détail
+  const brume = 0.10 * dist;                                  // plus loin = noyé dans la pièce
+  const flou = 1.25 + 0.9 * dist;
+  const sig = R.bruit;
+  for (let im = 0; im < 2; im++) {
+    petit.width = Math.max(2, Math.round(lw / flou)); petit.height = Math.max(2, Math.round(lh / flou));
+    petitCtx.imageSmoothingQuality = "high";
+    petitCtx.clearRect(0, 0, petit.width, petit.height);
+    petitCtx.drawImage(imgs[im], 0, 0, petit.width, petit.height);
+    baseCv.width = lw; baseCv.height = lh;
+    baseCtx.imageSmoothingQuality = "high";
+    baseCtx.drawImage(petit, 0, 0, lw, lh);
+    const src = baseCtx.getImageData(0, 0, lw, lh);
+    const s = src.data;
+    const etal = new Float32Array(s.length);
+    for (let y = 0; y < lh; y++) {
+      const yn = y / lh;
+      // les jambes se perdent dans l'ombre : pas de pieds plantés au mauvais endroit
+      let f = yn < 0.5 ? 1 : yn > 0.93 ? 0 : 1 - (yn - 0.5) / 0.43;
+      f = f * f * (3 - 2 * f);
+      for (let x = 0; x < lw; x++) {
+        const k = (y * lw + x) * 4;
+        if (s[k + 3] === 0) continue;
+        for (let c = 0; c < 3; c++) {
+          const v = Math.max(0, s[k + c] - 4) * 1.06;         // noirs légèrement écrasés
+          let o = (base + v * gain) * teinte[c];
+          o = o * (1 - brume) + [R.r, R.g, R.b][c] * brume;
+          etal[k + c] = o;
+        }
+        etal[k + 3] = s[k + 3] * f;
+      }
+    }
+    for (let g = 0; g < 3; g++) {
+      const { c, x } = calques[im][g];
+      c.width = lw; c.height = lh;
+      const out = x.createImageData(lw, lh), o = out.data;
+      for (let k = 0; k < o.length; k += 4) {
+        if (etal[k + 3] === 0) continue;
+        const nl = (Math.random() + Math.random() + Math.random() - 1.5) * 2 * sig;
+        o[k] = etal[k] + nl + (Math.random() - 0.5) * sig * 0.6;
+        o[k + 1] = etal[k + 1] + nl + (Math.random() - 0.5) * sig * 0.6;
+        o[k + 2] = etal[k + 2] + nl + (Math.random() - 0.5) * sig * 0.6;
+        o[k + 3] = etal[k + 3];
+      }
+      x.putImageData(out, 0, 0);
+    }
+  }
+  tCalque = performance.now();
+}
+
+// ── l'effet ──
+const fx = {};
+function reinitialiserEffet() {
+  Object.assign(fx, { etat: "attente", place: null, t0: 0, depuis: 0, raison: "", visible: false, mauvais: 0, sortie: 0, envoye: {} });
+  piece = null; patchPrec = null;
+}
+reinitialiserEffet();
+
+const lisse = x => { x = Math.min(1, Math.max(0, x)); return x * x * (3 - 2 * x); };
+const sortie = document.createElement("canvas"), sortieCtx = sortie.getContext("2d");
+let grain = 0;
+
+function piloter(t) {
+  if (t == null) return null;
+  if (fx.etat === "attente" && t >= T.apparition) { fx.etat = "recherche"; fx.depuis = t; }
+  if (fx.etat === "recherche") {
+    if (segmenteur && mw && nbSeg > 15) {
+      const p = trouverPlace();
+      if (p.cx != null) { fx.place = p; fx.t0 = t; fx.etat = "actif"; envoyer("apparition"); }
+      else fx.raison = p.raison;
+    } else fx.raison = segmenteur ? "masque pas prêt" : "segmentation " + etatSeg;
+    if (fx.etat === "recherche" && t - fx.depuis > ATTENTE_MAX) { fx.etat = "annule"; envoyer("annule", { raison: fx.raison }); }
+  }
+  if (fx.etat !== "actif" && fx.etat !== "abandon") { fx.visible = false; return null; }
+
+  const e = t - fx.t0;
+  const dTete = T.tete - T.apparition, dProche = T.proche - T.apparition, dFin = T.fin - T.apparition;
+  if (fx.etat === "actif" && e >= dFin) {                     // disparition nette
+    fx.etat = "fini"; fx.visible = false; envoyer("disparu"); return null;
+  }
+  if (fx.etat === "actif" && e >= dTete && !fx.envoye.tete) { fx.envoye.tete = 1; envoyer("tete"); }
+  if (fx.etat === "actif" && e >= dProche && !fx.envoye.proche) { fx.envoye.proche = 1; envoyer("proche"); }
+
+  const p = fx.place;
+  const k = lisse((e - dTete) / BASCULE);
+  const rap = lisse((e - dProche) / (dFin - dProche - 0.4));
+  let densite = e < dTete ? 0.85 * lisse(e / FONDU_ENTREE) : 0.92 + 0.08 * rap;
+  const ech = 1 + PROCHE * rap;
+  const dist = e < dTete ? 1 : 0.85 - 0.4 * rap;
+  if (fx.etat === "abandon") {
+    densite *= 1 - lisse((t - fx.sortie) / 0.25);
+    if (t - fx.sortie > 0.25) { fx.etat = "annule"; fx.visible = false; return null; }
+  }
+  const h = p.h * ech, w = p.w * ech;
+  const cx = p.cx - p.cote * W * 0.025 * rap;                // il se rapproche aussi un peu de la personne
+  const y = p.haut + H * 0.01 * rap - (h - p.h) * 0.15;
+  fx.visible = true;
+  return { x: cx - w / 2, y, w, h, k, densite, dist };
+}
+
+function dessinerWatcher(v) {
+  const now = performance.now();
+  if (now - tPiece > 300 || !piece) { mesurerPiece(v); tPiece = now; }
+  if (!piece) return;
+  const lw = Math.max(4, Math.round(v.w)), lh = Math.max(8, Math.round(v.h));
+  if (now - tCalque > 250 || Math.abs(lh - calqueH) > 3) construireCalques(lw, lh, v.dist);
+
+  // Garde-fou détourage : si le contour de la personne devient flou près de la tête du Watcher, on l'efface.
+  if (fx.etat === "actif") {
+    const c = couverture({ x: v.x - v.w * 0.3, y: v.y, w: v.w * 1.6, h: v.h * 0.35 });
+    fx.mauvais = c.incertain > 0.35 ? fx.mauvais + 1 : Math.max(0, fx.mauvais - 1);
+    if (fx.mauvais > 10) { fx.etat = "abandon"; fx.sortie = tAppel(); envoyer("annule", { raison: "détourage incertain" }); }
+  }
+
+  // 1 -> 2 : fondu additif (pas de baisse de densité au milieu du fondu)
+  sortie.width = calqueW; sortie.height = calqueH;
+  sortieCtx.globalCompositeOperation = "lighter";
+  sortieCtx.globalAlpha = 1 - v.k; sortieCtx.drawImage(calques[0][grain].c, 0, 0);
+  sortieCtx.globalAlpha = v.k;     sortieCtx.drawImage(calques[1][grain].c, 0, 0);
+  ctx.globalAlpha = v.densite;
+  ctx.drawImage(sortie, v.x, v.y, v.w, v.h);
+  ctx.globalAlpha = 1;
+
+  // la personne repasse devant
+  persCtx.clearRect(0, 0, W, H);
+  persCtx.setTransform(-1, 0, 0, 1, W, 0);
+  persCtx.drawImage(cam, 0, 0, W, H);
+  persCtx.globalCompositeOperation = "destination-in";
+  persCtx.drawImage(masqueCv, 0, 0, W, H);
+  persCtx.globalCompositeOperation = "source-over";
+  persCtx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.save();
+  ctx.beginPath(); ctx.rect(v.x - 6, v.y - 6, v.w + 12, v.h + 12); ctx.clip();
+  ctx.drawImage(persCv, 0, 0);
+  ctx.restore();
+}
+
+let fpsRendu = 0, fpsSeg = 0, tFps = performance.now(), nbR = 0, nbS = 0, tEtat = 0;
+function rendu() {
+  requestAnimationFrame(rendu);
+  if (cam.readyState < 2 || !cam.videoWidth) return;
+  dimensionner();
+  if (!cam.requestVideoFrameCallback && cam.currentTime !== dernierTemps) { dernierTemps = cam.currentTime; nouvelleImage = true; }
+  if (!nouvelleImage) return;           // rien de neuf : on garde l'image affichée
+  nouvelleImage = false;
+  if (segmenteur) { try { segmenterImage(); } catch (e) { etatSeg = "erreur " + e.message; segmenteur = null; } }
+
+  ctx.setTransform(-1, 0, 0, 1, W, 0);
+  ctx.drawImage(cam, 0, 0, W, H);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+  const v = piloter(tAppel());
+  if (v && segmenteur) { grain = (grain + 1) % 3; dessinerWatcher(v); }
+  nbR++;
+
+  const now = performance.now();
+  if (now - tFps > 1000) {
+    fpsRendu = nbR * 1000 / (now - tFps); fpsSeg = nbSeg - nbS; nbS = nbSeg; nbR = 0; tFps = now;
+    if (now - tEtat > 3000 && conn?.open) { tEtat = now; try { conn.send({ ev: "etat", fps: Math.round(fpsRendu), seg: etatSeg }); } catch {} }
+  }
+}
+
+// ── debug ──
+setInterval(() => {
+  if (!DEBUG) return;
+  const t = tAppel();
+  const l = [
+    "rôle " + ROLE + "   t=" + (t == null ? "—" : t.toFixed(1) + "s"),
+    "ICE " + etatIce,
+  ];
+  if (ROLE === "hote") l.push("cible: " + (infoCible.fps ?? "?") + " ips, seg " + (infoCible.seg ?? "?"));
+  else {
+    l.push("seg " + etatSeg + "  " + fpsSeg + " /s   rendu " + fpsRendu.toFixed(0) + " ips");
+    l.push("vignette " + W + "×" + H + "  masque " + mw + "×" + mh + "  personne " + (aire * 100).toFixed(0) + "%");
+    l.push("effet " + fx.etat + (fx.raison && fx.etat !== "actif" ? " (" + fx.raison + ")" : "") + (fx.place ? "  côté " + (fx.place.cote > 0 ? "droit" : "gauche") : ""));
+    if (piece) l.push("pièce noir " + piece.noir.toFixed(0) + " lum " + piece.lum.toFixed(0) + " bruit " + piece.bruit.toFixed(1) +
+                      " rgb " + [piece.r, piece.g, piece.b].map(x => x.toFixed(0)).join(","));
+  }
+  l.push(...derniersEvenements);
+  $("debug").textContent = l.join("\n");
+}, 250);
+</script>
+</body>
+</html>
