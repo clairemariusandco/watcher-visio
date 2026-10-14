@@ -430,7 +430,7 @@ function traiterMasque(f, w, h) {
     if (v > 0.5) a++;
   }
   aire = a / n;
-  const R = 2;
+  const R = 1;
   for (let y = 0; y < h; y++) {
     const o = y * w;
     for (let x = 0; x < w; x++) {
@@ -447,7 +447,7 @@ function traiterMasque(f, w, h) {
       let m = 0;
       for (let k = y0; k <= y1; k++) { const v = tmp[k * w + x]; if (v > m) m = v; }
       dil[y * w + x] = m;
-      let al = (m - 0.1) / 0.35;
+      let al = (m - 0.2) / 0.4;   // assez serré : un détourage large laisse un liseré clair sur le Watcher sombre
       al = al <= 0 ? 0 : al >= 1 ? 1 : al * al * (3 - 2 * al);
       px[(y * w + x) * 4 + 3] = al * 255;
     }
