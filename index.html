@@ -37,7 +37,7 @@
     text-align:center; font-size:14px; color:#ddd; background:linear-gradient(#000a, #0000); pointer-events:none; }
   #barreHaut b { display:block; font-size:16px; font-weight:600; color:#fff; }
   #vignette { position:absolute; right:calc(12px + env(safe-area-inset-right)); bottom:calc(112px + env(safe-area-inset-bottom));
-    width:28vw; max-width:170px; aspect-ratio:3/4; border-radius:12px; overflow:hidden; background:#1c1c1c;
+    width:32vw; max-width:190px; aspect-ratio:3/4; border-radius:12px; overflow:hidden; background:#1c1c1c;
     box-shadow:0 4px 18px #0008; }
   #vignette canvas, #vignette video { width:100%; height:100%; display:block; object-fit:cover; }
   #moiVideo { transform:scaleX(-1); }
@@ -136,11 +136,11 @@ const MODELE = "https://storage.googleapis.com/mediapipe-models/image_segmenter/
 const PREFIXE = "watcher-v0-";
 // Chronologie, en secondes après la connexion de l'appel.
 const T = { apparition: 10, tete: 13, proche: 16, fin: 18 };
-const FONDU_ENTREE = 1.6;   // le Watcher 1 émerge lentement
+const FONDU_ENTREE = 1.0;   // le Watcher 1 émerge en une seconde
 const BASCULE = 0.9;        // tête baissée -> tête relevée
 const ATTENTE_MAX = 8;      // pas de place libre derrière la personne : on attend, puis on renonce
-const HAUTEUR = 0.44;       // hauteur du Watcher (fraction de la vignette) quand il est « au fond »
-const PROCHE = 0.12;        // grossissement à 16-18 s
+const HAUTEUR = 0.68 * (parseFloat(new URLSearchParams(location.search).get("taille")) || 1);  // hauteur du Watcher (fraction de la vignette) ; &taille=1.2 pour régler
+const PROCHE = 0.3;         // grossissement à 16-18 s
 
 const P = new URLSearchParams(location.search);
 const SALLE = P.get("r");
@@ -486,7 +486,7 @@ function trouverPlace() {
   const yTete = yTop / mh * H;
   const h = H * HAUTEUR, w = h * ASPECT;
   const ecart = W * 0.03;
-  const haut = Math.min(H * 0.3, Math.max(H * 0.05, yTete + H * 0.015));
+  const haut = Math.min(H * 0.25, Math.max(H * 0.03, yTete - H * 0.02));   // il est grand : tête au niveau du haut du crâne
   const choix = [];
   for (const cote of [1, -1]) {
     const cx = cote > 0 ? dTete + ecart + w * 0.42 : gTete - ecart - w * 0.42;
@@ -552,12 +552,12 @@ let calqueW = 0, calqueH = 0, tCalque = 0;
 function construireCalques(lw, lh, dist) {
   calqueW = lw; calqueH = lh;
   const R = piece;
-  const base = Math.min(R.noir * 0.8, R.lum * 0.35, 55);     // son noir = le noir de la pièce, un peu en dessous
+  const base = Math.min(R.noir * 0.55, R.lum * 0.22, 32);   // plus sombre que le noir de la pièce : une vraie présence, pas une ombre
   const moy = (R.r + R.g + R.b) / 3 || 1;
   const teinte = [R.r, R.g, R.b].map(c => 1 + (Math.min(1.3, Math.max(0.75, c / moy)) - 1) * 0.6);
-  const gain = 0.55 + 0.35 * (1 - dist);                      // plus proche = plus de détail
-  const brume = 0.10 * dist;                                  // plus loin = noyé dans la pièce
-  const flou = 1.25 + 0.9 * dist;
+  const gain = 0.7 + 0.3 * (1 - dist);                        // plus proche = plus de détail
+  const brume = 0.05 * dist;                                  // plus loin = noyé dans la pièce
+  const flou = 1.1 + 0.5 * dist;
   const sig = R.bruit;
   for (let im = 0; im < 2; im++) {
     petit.width = Math.max(2, Math.round(lw / flou)); petit.height = Math.max(2, Math.round(lh / flou));
@@ -573,7 +573,7 @@ function construireCalques(lw, lh, dist) {
     for (let y = 0; y < lh; y++) {
       const yn = y / lh;
       // les jambes se perdent dans l'ombre : pas de pieds plantés au mauvais endroit
-      let f = yn < 0.5 ? 1 : yn > 0.93 ? 0 : 1 - (yn - 0.5) / 0.43;
+      let f = yn < 0.6 ? 1 : yn > 0.97 ? 0 : 1 - (yn - 0.6) / 0.37;
       f = f * f * (3 - 2 * f);
       for (let x = 0; x < lw; x++) {
         const k = (y * lw + x) * 4;
@@ -641,9 +641,9 @@ function piloter(t) {
   const p = fx.place;
   const k = lisse((e - dTete) / BASCULE);
   const rap = lisse((e - dProche) / (dFin - dProche - 0.4));
-  let densite = e < dTete ? 0.85 * lisse(e / FONDU_ENTREE) : 0.92 + 0.08 * rap;
+  let densite = e < dTete ? 0.97 * lisse(e / FONDU_ENTREE) : 0.97 + 0.03 * rap;
   const ech = 1 + PROCHE * rap;
-  const dist = e < dTete ? 1 : 0.85 - 0.4 * rap;
+  const dist = e < dTete ? 0.6 : 0.5 - 0.35 * rap;
   if (fx.etat === "abandon") {
     densite *= 1 - lisse((t - fx.sortie) / 0.25);
     if (t - fx.sortie > 0.25) { fx.etat = "annule"; fx.visible = false; return null; }
