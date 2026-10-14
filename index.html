@@ -370,7 +370,7 @@ const ASPECT = 158 / 720;
 function clipVideo(src, boucle) {
   const v = document.createElement("video");
   v.src = src; v.muted = true; v.playsInline = true; v.setAttribute("playsinline", ""); v.preload = "auto"; v.loop = boucle;
-  v.style.cssText = "position:fixed;left:0;top:0;width:2px;height:2px;opacity:0;pointer-events:none";
+  v.style.cssText = "position:fixed;left:0;top:0;width:4px;height:4px;opacity:0.01;pointer-events:none";   // « visible » : iOS met en pause les vidéos cachées
   document.body.appendChild(v);
   return v;
 }
@@ -758,6 +758,7 @@ function piloter(t) {
       if (!fx.envoye.clipRegard) { fx.envoye.clipRegard = 1; clips.reveil.pause(); lancerClip(clip, REGARD_DEBUT); }
       if (clip.currentTime >= REGARD_FIN) clip.currentTime = REGARD_DEBUT;
     }
+    if (clip.paused && !clip.ended && clip.lance) clip.play().catch(() => {});   // un navigateur qui la remet en pause : on relance
     if (!clipPret(clip)) clip = null;
   }
   const vivant = clip ? 1 : souffle;                          // la vidéo respire déjà toute seule
