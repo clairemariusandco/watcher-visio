@@ -375,14 +375,22 @@ function clipVideo(src, boucle) {
   return v;
 }
 const clips = ROLE === "hote" || P.get("video") === "0" ? null
-  : { reveil: clipVideo("assets/watcher_reveil.mp4", false), regard: clipVideo("assets/watcher_regard.mp4", true) };
+  : { reveil: clipVideo("assets/watcher_reveil.mp4", false), regard: clipVideo("assets/watcher_regard.mp4", false) };
 // watcher_reveil : tête baissée, penche la tête, puis la relève d'un coup vers REVEIL_TETE s et fixe la caméra.
 // watcher_regard : il fixe la caméra et respire, en boucle (après le gros plan).
 const REVEIL_TETE = 3.25, REVEIL_FIN = 5.0;
+// watcher_regard démarre tête baissée : on ne joue que la partie tête relevée, en boucle.
+const REGARD_DEBUT = 1.2, REGARD_FIN = 4.9;
 const clipPret = v => v && v.readyState >= 2 && !v.error;
 // iOS ne charge et ne lance une vidéo qu'après un geste : on les démarre/arrête au clic « Rejoindre ».
 function deverrouillerClips() {
-  if (clips) for (const v of Object.values(clips)) v.play().then(() => v.pause()).catch(() => {});
+  // (la pause ne doit jamais tomber après le vrai lancement : d'où le drapeau "lance")
+  if (clips) for (const v of Object.values(clips)) v.play().then(() => { if (!v.lance) v.pause(); }).catch(() => {});
+}
+function lancerClip(v, debut = 0) {
+  v.lance = true;
+  v.currentTime = debut;
+  v.play().catch(() => {});
 }
 const calqueVideo = nouveauxCalquesUn();
 function nouveauxCalquesUn() { const c = document.createElement("canvas"); return [{ c, x: c.getContext("2d") }]; }
@@ -642,7 +650,7 @@ function etalonner(img, lw, lh, dist, fonduBas, cibles, cle = false) {
           const v = Math.max(0, s[k + c] - 4) * 1.06;         // noirs légèrement écrasés
           let o = (base + v * gain) * teinte[c];
           o = o * (1 - brume) + [R.r, R.g, R.b][c] * brume;
-          etal[k + c] = o;
+          etal[k + c] = cle && o > 150 ? 150 : o;            // yeux pâles, jamais des phares
         }
         etal[k + 3] = s[k + 3] * f;
       }
@@ -744,10 +752,11 @@ function piloter(t) {
   if (clips && fx.etat === "actif") {
     if (e < REVEIL_FIN || !clipPret(clips.regard)) {
       clip = clips.reveil;
-      if (!fx.envoye.clipReveil) { fx.envoye.clipReveil = 1; clip.currentTime = 0; clip.play().catch(() => {}); }
+      if (!fx.envoye.clipReveil) { fx.envoye.clipReveil = 1; lancerClip(clip); }
     } else {
       clip = clips.regard;
-      if (!fx.envoye.clipRegard) { fx.envoye.clipRegard = 1; clips.reveil.pause(); clip.currentTime = 0; clip.play().catch(() => {}); }
+      if (!fx.envoye.clipRegard) { fx.envoye.clipRegard = 1; clips.reveil.pause(); lancerClip(clip, REGARD_DEBUT); }
+      if (clip.currentTime >= REGARD_FIN) clip.currentTime = REGARD_DEBUT;
     }
     if (!clipPret(clip)) clip = null;
   }
