@@ -550,6 +550,7 @@ function nouveauxCalques() { return [0, 1, 2].map(() => { const c = document.cre
 const calques = [nouveauxCalques(), nouveauxCalques()];
 let calqueW = 0, calqueH = 0, tCalque = 0;
 const ombreCv = document.createElement("canvas"), ombreCtx = ombreCv.getContext("2d");
+const OMBRE_X = 2.4, OMBRE_Y = 1.3;   // taille du calque d'ombre par rapport au Watcher
 
 function construireCalques(lw, lh, dist) {
   calqueW = lw; calqueH = lh;
@@ -605,9 +606,11 @@ function construireCalques(lw, lh, dist) {
     }
   }
   // son ombre sur le mur : une tache sombre très floue qui assombrit la pièce autour de lui
-  ombreCv.width = Math.max(2, Math.round(lw / 7)); ombreCv.height = Math.max(2, Math.round(lh / 7));
+  // (marge transparente tout autour, sinon le flou se coupe net au bord : un rectangle visible)
+  const bw = lw / 7, bh = lh / 7;
+  ombreCv.width = Math.ceil(bw * OMBRE_X); ombreCv.height = Math.ceil(bh * OMBRE_Y);
   ombreCtx.imageSmoothingQuality = "high";
-  ombreCtx.drawImage(calques[0][0].c, 0, 0, ombreCv.width, ombreCv.height);
+  ombreCtx.drawImage(calques[0][0].c, (ombreCv.width - bw * 1.25) / 2, (ombreCv.height - bh * 1.05) / 2, bw * 1.25, bh * 1.05);
   ombreCtx.globalCompositeOperation = "source-in";
   ombreCtx.fillStyle = "#000"; ombreCtx.fillRect(0, 0, ombreCv.width, ombreCv.height);
   ombreCtx.globalCompositeOperation = "source-over";
@@ -710,9 +713,9 @@ function dessinerWatcher(v) {
   sortieCtx.globalCompositeOperation = "lighter";
   sortieCtx.globalAlpha = 1 - v.k; sortieCtx.drawImage(calques[0][grain].c, 0, 0);
   sortieCtx.globalAlpha = v.k;     sortieCtx.drawImage(calques[1][grain].c, 0, 0);
-  const ow = v.w * 1.5, oh = v.h * 1.06;
-  const ombre = { x: v.x + v.w / 2 - ow / 2, y: v.y + v.h * 0.02, w: ow, h: oh };
-  ctx.globalAlpha = 0.3 * v.densite;
+  const ow = v.w * OMBRE_X, oh = v.h * OMBRE_Y;
+  const ombre = { x: v.x + v.w / 2 - ow / 2, y: v.y + v.h * 0.53 - oh / 2, w: ow, h: oh };
+  ctx.globalAlpha = 0.35 * v.densite;
   ctx.drawImage(ombreCv, ombre.x, ombre.y, ombre.w, ombre.h);
   ctx.globalAlpha = v.densite;
   ctx.drawImage(sortie, v.x, v.y, v.w, v.h);
@@ -727,7 +730,8 @@ function dessinerWatcher(v) {
   persCtx.globalCompositeOperation = "source-over";
   persCtx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.save();
-  ctx.beginPath(); ctx.rect(ombre.x - 6, v.y - 6, ombre.w + 12, Math.max(v.h, ombre.h) + 12); ctx.clip();
+  const cy0 = Math.min(v.y, ombre.y) - 6, cy1 = Math.max(v.y + v.h, ombre.y + ombre.h) + 6;
+  ctx.beginPath(); ctx.rect(ombre.x - 6, cy0, ombre.w + 12, cy1 - cy0); ctx.clip();
   ctx.drawImage(persCv, 0, 0);
   ctx.restore();
 
