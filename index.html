@@ -613,6 +613,8 @@ function suivrePoint(A, B, x, y) {
 
 // la personne n'est jamais le décor
 const estPersonne = (x, y, seuil = 0.15) => mw > 0 && conf[versMasqueY(y * EY) * mw + versMasqueX(x * EX)] > seuil;
+// un point du décor trop près de la personne finit collé à son contour (il glisse derrière elle) : marge de 5 px
+const presPersonne = (x, y) => estPersonne(x, y) || estPersonne(x - 5, y) || estPersonne(x + 5, y) || estPersonne(x, y - 5) || estPersonne(x, y + 5);
 
 // coins de Shi-Tomasi dans une zone du fond
 function detecterPoints(n0, zone, max, deja) {
@@ -632,7 +634,7 @@ function detecterPoints(n0, zone, max, deja) {
   const pts = deja.slice();
   for (const [, x, y] of cand) {
     if (pts.length >= max) break;
-    if (estPersonne(x, y, 0.1)) continue;
+    if (presPersonne(x, y)) continue;
     if (pts.some(p => (p[0] - x) ** 2 + (p[1] - y) ** 2 < 49)) continue;
     pts.push([x, y]);
   }
@@ -699,7 +701,7 @@ function suivreDecor() {
   const refs = [], cour = [];
   for (const p of suivi.pts) {
     const q = suivrePoint(suivi.pyr, pyr, p[0], p[1]);
-    if (q && !estPersonne(q[0], q[1])) { refs.push([p[2], p[3]]); cour.push(q); }
+    if (q && !presPersonne(q[0], q[1])) { refs.push([p[2], p[3]]); cour.push(q); }
   }
   const T = similarite(refs, cour);
   const ech = T ? Math.hypot(T.c, T.s) : 0, ang = T ? Math.atan2(T.s, T.c) : 0;
@@ -844,9 +846,8 @@ function fabriquerTete(src, lw, lh, v) {
 // ── la chronologie ──
 const SUIVI_TEST = P.has("suivi");                  // test de Yann : croix rouge sur l'ancre, tête visible en continu
 const TETE = 0.1 * (parseFloat(P.get("taille")) || 1);   // hauteur de la tête (fraction de la vignette)
-const T = SUIVI_TEST
-  ? { selection: 3, a: [4, 1e9], b: [1e9, 1e9] }
-  : { selection: 10, a: [12, 13.5], b: [16, 17.5] };
+// &suivi : sélection à 3 s, puis les deux apparitions rejouées en boucle toutes les 6 s (pour juger l'accroche et la matière)
+const T = SUIVI_TEST ? { selection: 3, a: [4, 5.5], b: [7, 8.5], cycle: 6 } : { selection: 10, a: [12, 13.5], b: [16, 17.5] };
 const ATTENTE_MAX = 4;                              // pas de zone trouvée : on renonce
 const fx = {};
 function reinitialiserEffet() {
@@ -884,21 +885,22 @@ function piloter(t) {
   }
 
   // deux apparitions : A (tête basse, très sombre, peu sortie) puis B (un peu plus sortie, regard caméra)
-  const phase = t >= T.a[0] && t < T.a[1] ? "A" : t >= T.b[0] && t < T.b[1] ? "B" : null;
-  if (t >= T.b[1]) { fx.etat = "fini"; fx.visible = false; envoyer("disparu"); if (clips) for (const v of Object.values(clips)) v.pause(); return null; }
+  const tc = T.cycle && t >= T.a[0] ? T.a[0] + (t - T.a[0]) % T.cycle : t, cycle = T.cycle ? Math.floor(Math.max(0, t - T.a[0]) / T.cycle) : 0;
+  const phase = tc >= T.a[0] && tc < T.a[1] ? "A" : tc >= T.b[0] && tc < T.b[1] ? "B" : null;
+  if (!T.cycle && t >= T.b[1]) { fx.etat = "fini"; fx.visible = false; envoyer("disparu"); if (clips) for (const v of Object.values(clips)) v.pause(); return null; }
   if (!phase) {
     if (fx.visible) { fx.visible = false; envoyer("disparu"); }
     return { cache: true };
   }
   const src = sourceClip(phase);
-  if (!fx.envoye[phase]) {
-    fx.envoye[phase] = 1; envoyer("apparition", { raison: phase });
+  if (!fx.envoye[phase + cycle]) {
+    fx.envoye[phase + cycle] = 1; envoyer("apparition", { raison: phase });
     if (src.el.tagName === "VIDEO") { for (const v of Object.values(clips)) if (v !== src.el) v.pause(); lancerClip(src.el, src.debut); }
   }
   if (src.el.tagName === "VIDEO" && src.el.paused && !src.el.ended && src.el.lance) src.el.play().catch(() => {});
   fx.visible = true;
   const debut = phase === "A" ? T.a[0] : T.b[0];
-  const entree = lisse((t - debut) / 0.25);         // une fraction de seconde pour sortir de l'ombre, pas plus
+  const entree = lisse((tc - debut) / 0.25);         // une fraction de seconde pour sortir de l'ombre, pas plus
   return {
     phase, src, mode: fx.zone.mode, cote: fx.zone.cote,
     sortie: phase === "A" ? 0.3 : 0.5,               // part de la tête qui dépasse du bord
