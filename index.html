@@ -844,6 +844,7 @@ function reinitialiserEffet() {
   if (clips) for (const v of Object.values(clips)) { v.pause(); v.lance = false; }
 }
 reinitialiserEffet();
+if (DEBUG) window.__watcher = { suivi, fx };   // pour mesurer l'accroche depuis la console
 
 function piloter(t) {
   if (t == null) return null;
