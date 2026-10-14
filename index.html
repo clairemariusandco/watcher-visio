@@ -134,21 +134,10 @@ import { FilesetResolver, ImageSegmenter } from "https://cdn.jsdelivr.net/npm/@m
 const MP = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm";
 const MODELE = "https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite";
 const PREFIXE = "watcher-v0-";
-// Chronologie, en secondes après la connexion de l'appel.
-const T = { apparition: 10, tete: 13, proche: 16, fin: 18 };
-const FONDU_ENTREE = 1.0;   // le Watcher 1 émerge en une seconde
-// 13 s : la tête se relève pendant un vacillement de lumière (voir piloter)
-const ATTENTE_MAX = 8;      // pas de place libre derrière la personne : on attend, puis on renonce
-const HAUTEUR = 0.68 * (parseFloat(new URLSearchParams(location.search).get("taille")) || 1);  // hauteur du Watcher (fraction de la vignette) ; &taille=1.2 pour régler
-const SAUT = 1.45;          // à 16 s il est d'un coup beaucoup plus près
-const GEL = 0.13;           // durée d'un hoquet de caméra (image figée)
-const CRI = 0.5;            // durée du gros plan (image 3)
-
 const P = new URLSearchParams(location.search);
 const SALLE = P.get("r");
 const SOLO = P.has("solo");
 const DEBUG = P.has("debug");
-const SON = P.get("son") !== "0";   // &son=0 pour couper le son
 const ROLE = SOLO ? "solo" : SALLE ? "cible" : "hote";
 const $ = id => document.getElementById(id);
 
@@ -277,7 +266,6 @@ function recevoirHote(m) {
 // ───────────────────────── cible ─────────────────────────
 $("btRejoindre").onclick = async () => {
   try { flux = await ouvrirCamera(); } catch (e) { return erreurCamera(e, $("msgCible")); }
-  preparerSon();
   deverrouillerClips();
   demarrerVignette();
   montrer("appel");
@@ -311,7 +299,6 @@ function envoyer(ev, extra = {}) {
 $("btSolo").onclick = async () => {
   try { flux = await ouvrirCamera(); } catch (e) { return erreurCamera(e, $("msgSolo")); }
   flux.getAudioTracks().forEach(t => t.stop());
-  preparerSon();
   deverrouillerClips();
   demarrerVignette();
   montrer("appel");
@@ -359,14 +346,12 @@ async function chargerSegmenteur() {
 }
 if (ROLE !== "hote") chargerSegmenteur();
 
-const imgs = [new Image(), new Image(), new Image()];
+const imgs = [new Image(), new Image()];
 imgs[0].src = "assets/watcher1.png";
 imgs[1].src = "assets/watcher2.png";
-imgs[2].src = "assets/watcher3.png";   // gros plan : une demi-seconde, au moment du saut
-const ASPECT = 158 / 720;
 
-// Les clips vidéo sur fond vert (Kling) : quand ils sont chargés, ils remplacent les images 1 et 2.
-// Même cadrage que les PNG (outils/clips.sh), donc même placement.
+// Les clips vidéo sur fond vert : un vrai humain filmé au téléphone (humain_a/b, prioritaire) ou le Watcher Kling.
+// Les clips Watcher ont le cadrage des PNG (outils/clips.sh).
 function clipVideo(src, boucle) {
   const v = document.createElement("video");
   v.src = src; v.muted = true; v.playsInline = true; v.setAttribute("playsinline", ""); v.preload = "auto"; v.loop = boucle;
@@ -375,12 +360,9 @@ function clipVideo(src, boucle) {
   return v;
 }
 const clips = ROLE === "hote" || P.get("video") === "0" ? null
-  : { reveil: clipVideo("assets/watcher_reveil.mp4", false), regard: clipVideo("assets/watcher_regard.mp4", false) };
-// watcher_reveil : tête baissée, penche la tête, puis la relève d'un coup vers REVEIL_TETE s et fixe la caméra.
-// watcher_regard : il fixe la caméra et respire, en boucle (après le gros plan).
-const REVEIL_TETE = 3.25, REVEIL_FIN = 5.0;
-// watcher_regard démarre tête baissée : on ne joue que la partie tête relevée, en boucle.
-const REGARD_DEBUT = 1.2, REGARD_FIN = 4.9;
+  : { reveil: clipVideo("assets/watcher_reveil.mp4", false),
+      humainA: clipVideo("assets/humain_a.mp4", false), humainB: clipVideo("assets/humain_b.mp4", false) };
+// watcher_reveil : tête baissée (0-2 s), puis il la relève d'un coup vers 3,25 s et fixe la caméra.
 const clipPret = v => v && v.readyState >= 2 && !v.error;
 // iOS ne charge et ne lance une vidéo qu'après un geste : on les démarre/arrête au clic « Rejoindre ».
 function deverrouillerClips() {
@@ -392,8 +374,6 @@ function lancerClip(v, debut = 0) {
   v.currentTime = debut;
   v.play().catch(() => {});
 }
-const calqueVideo = nouveauxCalquesUn();
-function nouveauxCalquesUn() { const c = document.createElement("canvas"); return [{ c, x: c.getContext("2d") }]; }
 
 let nouvelleImage = true, nbImagesCam = 0;
 function surveillerImages() {
@@ -504,50 +484,6 @@ function couverture(r) {
   return { personne: n ? pers / n : 1, incertain: n ? incert / n : 1 };
 }
 
-// Où mettre le Watcher : à côté de la tête, légèrement derrière l'épaule, côté le plus libre.
-function trouverPlace() {
-  if (!mw) return { raison: "pas de masque" };
-  let yTop = -1;
-  for (let y = 0; y < mh && yTop < 0; y++) {
-    let n = 0;
-    for (let x = 0; x < mw; x++) if (conf[y * mw + x] > 0.5) n++;
-    if (n > mw * 0.03) yTop = y;
-  }
-  if (yTop < 0) return { raison: "personne absente" };
-  if (yTop > mh * 0.6) return { raison: "personne trop basse" };
-  let x0 = mw, x1 = -1;
-  const yFin = Math.min(mh, yTop + Math.round(mh * 0.2));
-  for (let y = yTop; y < yFin; y++) for (let x = 0; x < mw; x++) {
-    if (conf[y * mw + x] > 0.5) { if (x < x0) x0 = x; if (x > x1) x1 = x; }
-  }
-  const gTete = (1 - (x1 + 1) / mw) * W, dTete = (1 - x0 / mw) * W;   // bords de la tête, à l'écran
-  const yTete = yTop / mh * H;
-  const h = H * HAUTEUR, w = h * ASPECT;
-  const ecart = W * 0.03;
-  const haut = Math.min(H * 0.25, Math.max(H * 0.03, yTete - H * 0.02));   // il est grand : tête au niveau du haut du crâne
-  const choix = [];
-  for (const cote of [1, -1]) {
-    const cx = cote > 0 ? dTete + ecart + w * 0.42 : gTete - ecart - w * 0.42;
-    // il peut dépasser du bord de l'image (visage collé à la caméra) : seule sa tête doit rester dedans
-    if (cx < w * 0.15 || cx > W - w * 0.15) continue;
-    const tete = { x: cx - w * 0.2, y: haut, w: w * 0.4, h: h * 0.16 };
-    const c = couverture(tete);
-    // sa tête peut être en partie derrière celle de la personne : le détourage la cache
-    if (c.personne > 0.3 || c.incertain > 0.4) continue;
-    choix.push({ cote, cx, haut, w, h, libre: cote > 0 ? W - dTete : gTete, gTete, dTete, yTete });
-  }
-  // Dernier recours (visage qui remplit l'écran) : collé au bord du côté le plus libre, à moitié caché par la tête.
-  if (!choix.length) {
-    const cote = W - dTete > gTete ? 1 : -1;
-    const cx = cote > 0 ? W - w * 0.3 : w * 0.3;
-    const c = couverture({ x: cx - w * 0.2, y: haut, w: w * 0.4, h: h * 0.16 });
-    if (c.personne <= 0.6 && c.incertain <= 0.5) choix.push({ cote, cx, haut, w, h, libre: 0, gTete, dTete, yTete });
-  }
-  if (!choix.length) return { raison: "pas de place libre" };
-  choix.sort((a, b) => b.libre - a.libre);
-  return choix[0];
-}
-
 // ── la pièce : couleur, noir, grain ──
 const mini = document.createElement("canvas");
 mini.width = mini.height = 20;
@@ -589,264 +525,418 @@ function mesurerPiece(boite) {
   else for (const k in nouv) piece[k] += (nouv[k] - piece[k]) * 0.3;
 }
 
-// ── fabrication du Watcher étalonné sur la pièce (3 variantes de grain par image) ──
-const petit = document.createElement("canvas"), petitCtx = petit.getContext("2d");
-const baseCv = document.createElement("canvas"), baseCtx = baseCv.getContext("2d", { willReadFrequently: true });
-function nouveauxCalques() { return [0, 1, 2].map(() => { const c = document.createElement("canvas"); return { c, x: c.getContext("2d") }; }); }
-const calques = [nouveauxCalques(), nouveauxCalques()];
-const calquesGP = nouveauxCalques();
-let gpPret = false;
-let calqueW = 0, calqueH = 0, tCalque = 0;
-const ombreCv = document.createElement("canvas"), ombreCtx = ombreCv.getContext("2d");
-const OMBRE_X = 2.4, OMBRE_Y = 1.3;   // taille du calque d'ombre par rapport au Watcher
+// ═════════════════════════ V1.1 : ACCROCHÉ AU DÉCOR, À PEINE VISIBLE ═════════════════════════
+// 1. À SELECTION s, on choisit un bord vertical du décor (chambranle, meuble, angle de mur) avec
+//    un côté sombre ; à défaut, le coin de fond le plus sombre.
+// 2. On suit des points du décor image après image (Lucas-Kanade pyramidal + similarité RANSAC) :
+//    si la porte glisse de 40 px, le Watcher glisse de 40 px.
+// 3. Seule une tête et un bout d'épaule dépassent du côté sombre, basse résolution, bruitée, écrasée.
 
-function construireCalques(lw, lh, dist) {
-  calqueW = lw; calqueH = lh;
-  etalonner(imgs[0], lw, lh, dist, 0.6, calques[0]);
-  etalonner(imgs[1], lw, lh, dist, 0.6, calques[1]);
-  // son ombre sur le mur : une tache sombre très floue qui assombrit la pièce autour de lui
-  // (marge transparente tout autour, sinon le flou se coupe net au bord : un rectangle visible)
-  const bw = lw / 7, bh = lh / 7;
-  ombreCv.width = Math.ceil(bw * OMBRE_X); ombreCv.height = Math.ceil(bh * OMBRE_Y);
-  ombreCtx.imageSmoothingQuality = "high";
-  ombreCtx.drawImage(calques[0][0].c, (ombreCv.width - bw * 1.25) / 2, (ombreCv.height - bh * 1.05) / 2, bw * 1.25, bh * 1.05);
-  ombreCtx.globalCompositeOperation = "source-in";
-  ombreCtx.fillStyle = "#000"; ombreCtx.fillRect(0, 0, ombreCv.width, ombreCv.height);
-  ombreCtx.globalCompositeOperation = "source-over";
-  tCalque = performance.now();
+// ── l'image de suivi : la vignette (déjà en miroir) réduite de moitié, en niveaux de gris ──
+const TW = 180;
+let TH = 240, EX = 2, EY = 2;                   // EX, EY : facteurs suivi -> vignette
+const suiviCv = document.createElement("canvas");
+const suiviCtx = suiviCv.getContext("2d", { willReadFrequently: true });
+
+function imageSuivi() {
+  TH = Math.round(TW * H / W); EX = W / TW; EY = H / TH;
+  if (suiviCv.width !== TW || suiviCv.height !== TH) { suiviCv.width = TW; suiviCv.height = TH; }
+  suiviCtx.drawImage(cv, 0, 0, TW, TH);
+  const d = suiviCtx.getImageData(0, 0, TW, TH).data;
+  const g = new Float32Array(TW * TH);
+  for (let i = 0, k = 0; i < g.length; i++, k += 4) g[i] = 0.299 * d[k] + 0.587 * d[k + 1] + 0.114 * d[k + 2];
+  return g;
 }
 
-// Étalonne une image du Watcher sur la pièce (noir, teinte, flou, grain) vers 3 variantes de grain.
-// fonduBas : à partir de quelle hauteur (0-1) le bas du corps se perd dans l'ombre.
-// cle : la source est une vidéo sur fond vert, on retire le vert ici, image par image.
-function etalonner(img, lw, lh, dist, fonduBas, cibles, cle = false) {
+function pyramide(g) {
+  const niv = [{ w: TW, h: TH, I: g }];
+  for (let l = 1; l < 3; l++) {
+    const p = niv[l - 1], w = p.w >> 1, h = p.h >> 1, I = new Float32Array(w * h);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const o = 2 * y * p.w + 2 * x;
+      I[y * w + x] = (p.I[o] + p.I[o + 1] + p.I[o + p.w] + p.I[o + p.w + 1]) * 0.25;
+    }
+    niv.push({ w, h, I });
+  }
+  for (const n of niv) {
+    const { w, h, I } = n, Ix = new Float32Array(w * h), Iy = new Float32Array(w * h);
+    for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      Ix[i] = (I[i + 1] - I[i - 1]) * 0.5;
+      Iy[i] = (I[i + w] - I[i - w]) * 0.5;
+    }
+    n.Ix = Ix; n.Iy = Iy;
+  }
+  return niv;
+}
+
+function echant(I, w, h, x, y) {
+  if (x < 0) x = 0; else if (x > w - 1.001) x = w - 1.001;
+  if (y < 0) y = 0; else if (y > h - 1.001) y = h - 1.001;
+  const x0 = x | 0, y0 = y | 0, fx = x - x0, fy = y - y0, i = y0 * w + x0;
+  return (I[i] * (1 - fx) + I[i + 1] * fx) * (1 - fy) + (I[i + w] * (1 - fx) + I[i + w + 1] * fx) * fy;
+}
+
+// Lucas-Kanade pyramidal : où est passé le point (x, y) de l'image A dans l'image B ?
+const R_LK = 4, NW = (2 * R_LK + 1) ** 2;
+const wI = new Float32Array(NW), wX = new Float32Array(NW), wY = new Float32Array(NW);
+function suivrePoint(A, B, x, y) {
+  let gx = 0, gy = 0;
+  for (let l = A.length - 1; l >= 0; l--) {
+    const s = 1 << l, px = x / s, py = y / s, a = A[l], b = B[l];
+    let gxx = 0, gxy = 0, gyy = 0, k = 0;
+    for (let dy = -R_LK; dy <= R_LK; dy++) for (let dx = -R_LK; dx <= R_LK; dx++, k++) {
+      const u = px + dx, v = py + dy;
+      const ix = echant(a.Ix, a.w, a.h, u, v), iy = echant(a.Iy, a.w, a.h, u, v);
+      wI[k] = echant(a.I, a.w, a.h, u, v); wX[k] = ix; wY[k] = iy;
+      gxx += ix * ix; gxy += ix * iy; gyy += iy * iy;
+    }
+    const det = gxx * gyy - gxy * gxy;
+    if (det < 1e-2 || Math.min(gxx, gyy) < 1) return null;
+    let vx = 0, vy = 0;
+    for (let it = 0; it < 10; it++) {
+      let bx = 0, by = 0; k = 0;
+      for (let dy = -R_LK; dy <= R_LK; dy++) for (let dx = -R_LK; dx <= R_LK; dx++, k++) {
+        const diff = echant(b.I, b.w, b.h, px + dx + gx + vx, py + dy + gy + vy) - wI[k];
+        bx += diff * wX[k]; by += diff * wY[k];
+      }
+      const ex = (gyy * bx - gxy * by) / det, ey = (gxx * by - gxy * bx) / det;
+      vx -= ex; vy -= ey;
+      if (ex * ex + ey * ey < 0.0009) break;
+    }
+    if (l > 0) { gx = 2 * (gx + vx); gy = 2 * (gy + vy); } else { gx += vx; gy += vy; }
+  }
+  const nx = x + gx, ny = y + gy;
+  if (nx < 2 || ny < 2 || nx > TW - 3 || ny > TH - 3) return null;
+  return [nx, ny];
+}
+
+// la personne n'est jamais le décor
+const estPersonne = (x, y, seuil = 0.15) => mw > 0 && conf[versMasqueY(y * EY) * mw + versMasqueX(x * EX)] > seuil;
+
+// coins de Shi-Tomasi dans une zone du fond
+function detecterPoints(n0, zone, max, deja) {
+  const { w, h, Ix, Iy } = n0, cand = [];
+  const x0 = Math.max(6, zone.x0 | 0), x1 = Math.min(w - 7, zone.x1 | 0);
+  const y0 = Math.max(6, zone.y0 | 0), y1 = Math.min(h - 7, zone.y1 | 0);
+  for (let y = y0; y <= y1; y += 2) for (let x = x0; x <= x1; x += 2) {
+    let a = 0, b = 0, c = 0;
+    for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
+      const i = (y + dy) * w + x + dx, ix = Ix[i], iy = Iy[i];
+      a += ix * ix; b += ix * iy; c += iy * iy;
+    }
+    const lmin = (a + c) / 2 - Math.sqrt(((a - c) / 2) ** 2 + b * b);
+    if (lmin > 40) cand.push([lmin, x, y]);
+  }
+  cand.sort((p, q) => q[0] - p[0]);
+  const pts = deja.slice();
+  for (const [, x, y] of cand) {
+    if (pts.length >= max) break;
+    if (estPersonne(x, y, 0.1)) continue;
+    if (pts.some(p => (p[0] - x) ** 2 + (p[1] - y) ** 2 < 49)) continue;
+    pts.push([x, y]);
+  }
+  return pts;
+}
+
+// similarité q = [c -s; s c] p + t, estimée de façon robuste (RANSAC sur paires de points)
+function similarite(P, Q) {
+  const n = P.length;
+  if (n < 4) return null;
+  const ajuster = idx => {
+    let mpx = 0, mpy = 0, mqx = 0, mqy = 0;
+    for (const i of idx) { mpx += P[i][0]; mpy += P[i][1]; mqx += Q[i][0]; mqy += Q[i][1]; }
+    const m = idx.length; mpx /= m; mpy /= m; mqx /= m; mqy /= m;
+    let n1 = 0, n2 = 0, den = 0;
+    for (const i of idx) {
+      const ax = P[i][0] - mpx, ay = P[i][1] - mpy, bx = Q[i][0] - mqx, by = Q[i][1] - mqy;
+      n1 += ax * bx + ay * by; n2 += ax * by - ay * bx; den += ax * ax + ay * ay;
+    }
+    if (den < 1e-6) return { c: 1, s: 0, tx: mqx - mpx, ty: mqy - mpy };
+    const c = n1 / den, s = n2 / den;
+    return { c, s, tx: mqx - (c * mpx - s * mpy), ty: mqy - (s * mpx + c * mpy) };
+  };
+  const residu = (T, i) => {
+    const x = T.c * P[i][0] - T.s * P[i][1] + T.tx, y = T.s * P[i][0] + T.c * P[i][1] + T.ty;
+    return (x - Q[i][0]) ** 2 + (y - Q[i][1]) ** 2;
+  };
+  let meilleurs = [];
+  for (let it = 0; it < 40; it++) {
+    const i = (Math.random() * n) | 0, j = (Math.random() * n) | 0;
+    if (i === j) continue;
+    const T = ajuster([i, j]);
+    const ech = Math.hypot(T.c, T.s);
+    if (ech < 0.8 || ech > 1.25) continue;
+    const ins = [];
+    for (let k = 0; k < n; k++) if (residu(T, k) < 1.0) ins.push(k);
+    if (ins.length > meilleurs.length) meilleurs = ins;
+  }
+  if (meilleurs.length < Math.max(5, n * 0.3)) return null;
+  const T = ajuster(meilleurs);
+  T.inliers = meilleurs;
+  return T;
+}
+
+// ── le suivi ──
+const suivi = { actif: false, pyr: null, pts: [], ancre: null, ech: 1, angle: 0, perdu: 0, vitesse: [0, 0], nbIn: 0 };
+
+function suivreDecor() {
+  const pyr = pyramide(imageSuivi());
+  if (!suivi.actif || !suivi.pyr) { suivi.pyr = pyr; return; }
+  const avant = [], apres = [];
+  for (const p of suivi.pts) {
+    const q = suivrePoint(suivi.pyr, pyr, p[0], p[1]);
+    if (q && !estPersonne(q[0], q[1])) { avant.push(p); apres.push(q); }
+  }
+  const T = similarite(avant, apres);
+  if (T) {
+    const a = suivi.ancre;
+    const nx = T.c * a[0] - T.s * a[1] + T.tx, ny = T.s * a[0] + T.c * a[1] + T.ty;
+    suivi.vitesse = [(nx - a[0]) * EX, (ny - a[1]) * EY];
+    suivi.ancre = [nx, ny];
+    suivi.ech *= Math.hypot(T.c, T.s);
+    suivi.angle += Math.atan2(T.s, T.c);
+    suivi.pts = T.inliers.map(i => apres[i]);
+    suivi.nbIn = T.inliers.length;
+    suivi.perdu = 0;
+  } else {
+    suivi.perdu++;
+    suivi.pts = apres;
+    suivi.nbIn = 0;
+  }
+  // on recharge des points autour de l'ancre quand il en manque
+  if (suivi.pts.length < 30) {
+    const [ax, ay] = suivi.ancre, r = TW * 0.35;
+    suivi.pts = detecterPoints(pyr[0], { x0: ax - r, x1: ax + r, y0: ay - r * 1.3, y1: ay + r * 1.3 }, 60, suivi.pts);
+    if (suivi.pts.length < 30) suivi.pts = detecterPoints(pyr[0], { x0: 0, x1: TW, y0: 0, y1: TH }, 60, suivi.pts);
+  }
+  suivi.pyr = pyr;
+}
+
+// ── le choix de l'endroit : un bord vertical du décor avec un côté sombre ──
+function choisirZone() {
+  const pyr = suivi.pyr;
+  if (!pyr || !mw) return { raison: "pas d'image" };
+  const { w, h, I } = pyr[0];
+  const y0 = Math.round(h * 0.08), y1 = Math.round(h * 0.6);
+  const teteH = TETE * h;
+  let best = null;
+  for (let x = 8; x < w - 8; x++) {
+    let pos = 0, neg = 0, lignes = 0, ys = [];
+    for (let y = y0; y < y1; y++) {
+      if (estPersonne(x - 4, y) || estPersonne(x + 4, y)) continue;
+      lignes++;
+      const g = I[y * w + x + 2] - I[y * w + x - 2];
+      if (g > 12) { pos++; ys.push(y); } else if (g < -12) { neg++; ys.push(-y - 1); }
+    }
+    if (lignes < (y1 - y0) * 0.4) continue;
+    const signe = pos >= neg ? 1 : -1, nb = Math.max(pos, neg);
+    const score = nb / (y1 - y0);
+    if (score < 0.3 || (best && score <= best.score)) continue;
+    // le côté sombre : là où l'image descend
+    const cote = signe > 0 ? -1 : 1;
+    const rang = ys.filter(v => (signe > 0 ? v >= 0 : v < 0)).map(v => (v >= 0 ? v : -v - 1));
+    const yc = rang[Math.floor(rang.length * 0.35)];
+    // la tête doit tenir du côté sombre sans toucher la personne
+    let libre = true;
+    for (let dy = -teteH; dy <= teteH * 1.4 && libre; dy += 3)
+      for (let dx = 2; dx <= teteH; dx += 3) if (estPersonne(x + cote * dx, yc + dy, 0.1)) { libre = false; break; }
+    if (!libre) continue;
+    best = { score, x, y: yc, cote, mode: "bord" };
+  }
+  if (best) return best;
+  // sinon : le coin de fond le plus sombre
+  let sombre = null;
+  for (let gy = 0; gy < 6; gy++) for (let gx = 0; gx < 6; gx++) {
+    const cx = (gx + 0.5) * w / 6, cy = h * 0.1 + (gy + 0.5) * h * 0.5 / 6;
+    let s = 0, n = 0, pers = false;
+    for (let dy = -teteH; dy <= teteH && !pers; dy += 2) for (let dx = -teteH; dx <= teteH; dx += 2) {
+      const x = cx + dx, y = cy + dy;
+      if (x < 2 || y < 2 || x > w - 3 || y > h - 3) continue;
+      if (estPersonne(x, y, 0.1)) { pers = true; break; }
+      s += I[(y | 0) * w + (x | 0)]; n++;
+    }
+    if (pers || n < 10) continue;
+    if (!sombre || s / n < sombre.lum) sombre = { lum: s / n, x: cx, y: cy, cote: 1, mode: "ombre" };
+  }
+  return sombre || { raison: "pas de fond libre" };
+}
+
+// ── les sources : vrai humain filmé si présent, sinon le Watcher Kling ──
+// Cadre « tête + épaules » dans la vidéo Watcher 158×720 (tête ≈ 85 px de haut, centrée à 52 %).
+const CADRE_W = { sx: 14, sy: 0, sw: 130, sh: 170, teteX: 0.52, teteY: 0.25, teteH: 0.5 };
+const CADRE_H = { sx: 0, sy: 0, sw: 0, sh: 0, teteX: 0.5, teteY: 0.35, teteH: 0.45 };   // clips humains : cadre entier
+function sourceClip(lettre) {
+  const humain = clips && clips["humain" + lettre];
+  if (clipPret(humain)) return { el: humain, cadre: CADRE_H, cle: true, debut: 0 };
+  if (clips && clipPret(clips.reveil)) return { el: clips.reveil, cadre: CADRE_W, cle: true, debut: lettre === "A" ? 0.3 : 3.0 };
+  return { el: imgs[lettre === "A" ? 0 : 1], cadre: CADRE_W, cle: false, debut: 0 };
+}
+
+// ── la matière : une autre capture de téléphone, pas un rendu propre ──
+const BAS = 2.4;                                    // résolution divisée : il ne doit jamais être net
+const tete = document.createElement("canvas"), teteCtx = tete.getContext("2d", { willReadFrequently: true });
+const trainee = document.createElement("canvas"), traineeCtx = trainee.getContext("2d");
+
+function fabriquerTete(src, lw, lh, v) {
+  const tw = Math.max(4, Math.round(lw / BAS)), th = Math.max(6, Math.round(lh / BAS));
+  if (tete.width !== tw || tete.height !== th) { tete.width = tw; tete.height = th; }
+  const cad = src.cadre, el = src.el;
+  const sw = cad.sw || el.videoWidth || el.width, sh = cad.sh || el.videoHeight || el.height;
+  teteCtx.clearRect(0, 0, tw, th);
+  teteCtx.imageSmoothingQuality = "high";
+  teteCtx.drawImage(el, cad.sx, cad.sy, sw, sh, 0, 0, tw, th);
+  const img = teteCtx.getImageData(0, 0, tw, th), s = img.data;
   const R = piece;
-  const base = Math.min(R.noir * 0.55, R.lum * 0.22, 32);   // plus sombre que le noir de la pièce : une vraie présence, pas une ombre
+  const base = Math.min(R.noir * 0.8, R.lum * 0.3, 40);
   const moy = (R.r + R.g + R.b) / 3 || 1;
   const teinte = [R.r, R.g, R.b].map(c => 1 + (Math.min(1.3, Math.max(0.75, c / moy)) - 1) * 0.6);
-  const gain = 0.7 + 0.3 * (1 - dist);                        // plus proche = plus de détail
-  const brume = 0.05 * dist;                                  // plus loin = noyé dans la pièce
-  const flou = 1.1 + 0.5 * dist;
-  const sig = R.bruit;
-  {
-    petit.width = Math.max(2, Math.round(lw / flou)); petit.height = Math.max(2, Math.round(lh / flou));
-    petitCtx.imageSmoothingQuality = "high";
-    petitCtx.clearRect(0, 0, petit.width, petit.height);
-    petitCtx.drawImage(img, 0, 0, petit.width, petit.height);
-    baseCv.width = lw; baseCv.height = lh;
-    baseCtx.imageSmoothingQuality = "high";
-    baseCtx.drawImage(petit, 0, 0, lw, lh);
-    const src = baseCtx.getImageData(0, 0, lw, lh);
-    const s = src.data;
-    if (cle) {
-      for (let k = 0; k < s.length; k += 4) {
+  const plafond = R.lum * 0.85 + 15;               // rien de plus clair que la pièce, yeux compris
+  const sig = Math.max(3, R.bruit * 1.8);
+  const hx = cad.teteX * tw, hy = cad.teteY * th, rr = cad.teteH * th;
+  for (let y = 0; y < th; y++) {
+    const yn = y / th;
+    let f = yn < 0.55 ? 1 : yn > 0.95 ? 0 : 1 - (yn - 0.55) / 0.4;   // les épaules se perdent dans le noir
+    f = f * f * (3 - 2 * f);
+    for (let x = 0; x < tw; x++) {
+      const k = (y * tw + x) * 4;
+      let a = s[k + 3] / 255;
+      if (src.cle) {
         const r = s[k], g = s[k + 1], b = s[k + 2], m = r > b ? r : b;
-        const al = 1 - Math.min(1, Math.max(0, (g - m - 22) / 70));
-        if (g > m) s[k + 1] = m;                              // plus aucun vert sur les bords
-        s[k + 3] = al < 0.04 ? 0 : al * 255;
+        a *= 1 - Math.min(1, Math.max(0, (g - m - 22) / 70));
+        if (g > m) s[k + 1] = m;
       }
-    }
-    const etal = new Float32Array(s.length);
-    for (let y = 0; y < lh; y++) {
-      const yn = y / lh;
-      // les jambes se perdent dans l'ombre : pas de pieds plantés au mauvais endroit
-      let f = yn < fonduBas ? 1 : yn > 0.97 ? 0 : 1 - (yn - fonduBas) / (0.97 - fonduBas);
-      f = f * f * (3 - 2 * f);
-      for (let x = 0; x < lw; x++) {
-        const k = (y * lw + x) * 4;
-        if (s[k + 3] === 0) continue;
-        for (let c = 0; c < 3; c++) {
-          const v = Math.max(0, s[k + c] - 4) * 1.06;         // noirs légèrement écrasés
-          let o = (base + v * gain) * teinte[c];
-          o = o * (1 - brume) + [R.r, R.g, R.b][c] * brume;
-          etal[k + c] = cle && o > 150 ? 150 : o;            // yeux pâles, jamais des phares
-        }
-        etal[k + 3] = s[k + 3] * f;
+      if (v.mode === "ombre") {                     // sans bord : il sort de l'obscurité
+        const d = Math.hypot((x - hx) / rr, (y - hy) / (rr * 1.1));
+        let o = 1 - (d - 0.55) / 0.7; o = o < 0 ? 0 : o > 1 ? 1 : o * o * (3 - 2 * o);
+        a *= o;
       }
-    }
-    for (let g = 0; g < cibles.length; g++) {
-      const { c, x } = cibles[g];
-      c.width = lw; c.height = lh;
-      const out = x.createImageData(lw, lh), o = out.data;
-      for (let k = 0; k < o.length; k += 4) {
-        if (etal[k + 3] === 0) continue;
-        const nl = (Math.random() + Math.random() + Math.random() - 1.5) * 2 * sig;
-        o[k] = etal[k] + nl + (Math.random() - 0.5) * sig * 0.6;
-        o[k + 1] = etal[k + 1] + nl + (Math.random() - 0.5) * sig * 0.6;
-        o[k + 2] = etal[k + 2] + nl + (Math.random() - 0.5) * sig * 0.6;
-        o[k + 3] = etal[k + 3];
+      a *= f;
+      if (a < 0.03) { s[k + 3] = 0; continue; }
+      const nl = (Math.random() + Math.random() + Math.random() - 1.5) * 2 * sig;
+      for (let c = 0; c < 3; c++) {
+        const val = Math.max(0, s[k + c] - 6) * 1.05;                 // contraste écrasé
+        let o = (base + val * v.gain) * teinte[c] + nl + (Math.random() - 0.5) * sig * 0.5;
+        s[k + c] = o > plafond ? plafond : o;
       }
-      x.putImageData(out, 0, 0);
+      s[k + 3] = a * 255;
     }
   }
+  teteCtx.putImageData(img, 0, 0);
+  // traînée de compression : un peu de l'image précédente reste collée
+  if (trainee.width !== tw || trainee.height !== th) { trainee.width = tw; trainee.height = th; traineeCtx.drawImage(tete, 0, 0); }
+  else { traineeCtx.globalAlpha = 0.65; traineeCtx.drawImage(tete, 0, 0); traineeCtx.globalAlpha = 1; }
+  return trainee;
 }
 
-// ── l'effet ──
+// ── la chronologie ──
+const SUIVI_TEST = P.has("suivi");                  // test de Yann : croix rouge sur l'ancre, tête visible en continu
+const TETE = 0.1 * (parseFloat(P.get("taille")) || 1);   // hauteur de la tête (fraction de la vignette)
+const T = SUIVI_TEST
+  ? { selection: 3, a: [4, 1e9], b: [1e9, 1e9] }
+  : { selection: 10, a: [12, 13.5], b: [16, 17.5] };
+const ATTENTE_MAX = 4;                              // pas de zone trouvée : on renonce
 const fx = {};
 function reinitialiserEffet() {
-  Object.assign(fx, { etat: "attente", place: null, t0: 0, depuis: 0, raison: "", visible: false, mauvais: 0, sortie: 0, envoye: {}, pres: null });
-  piece = null; patchPrec = null; gpPret = false;
+  Object.assign(fx, { etat: "attente", depuis: 0, raison: "", zone: null, visible: false, envoye: {}, posPrec: null });
+  Object.assign(suivi, { actif: false, pts: [], ancre: null, ech: 1, angle: 0, perdu: 0, nbIn: 0 });
+  piece = null; patchPrec = null;
+  if (clips) for (const v of Object.values(clips)) { v.pause(); v.lance = false; }
 }
 reinitialiserEffet();
 
-const lisse = x => { x = Math.min(1, Math.max(0, x)); return x * x * (3 - 2 * x); };
-const sortie = document.createElement("canvas"), sortieCtx = sortie.getContext("2d");
-let grain = 0;
-
 function piloter(t) {
   if (t == null) return null;
-  if (fx.etat === "attente" && t >= T.apparition) { fx.etat = "recherche"; fx.depuis = t; }
+  if (fx.etat === "attente" && t >= T.selection) { fx.etat = "recherche"; fx.depuis = t; }
   if (fx.etat === "recherche") {
-    if (segmenteur && mw && nbSeg > 15) {
-      const p = trouverPlace();
-      if (p.cx != null) { fx.place = p; fx.t0 = t; fx.etat = "actif"; envoyer("apparition"); }
-      else fx.raison = p.raison;
+    if (segmenteur && mw && nbSeg > 15 && suivi.pyr) {
+      const z = choisirZone();
+      if (z.mode) {
+        const n0 = suivi.pyr[0], r = TW * 0.35;
+        suivi.pts = detecterPoints(n0, { x0: z.x - r, x1: z.x + r, y0: z.y - r * 1.3, y1: z.y + r * 1.3 }, 60, []);
+        if (suivi.pts.length < 30) suivi.pts = detecterPoints(n0, { x0: 0, x1: TW, y0: 0, y1: TH }, 60, suivi.pts);
+        if (suivi.pts.length >= 12) {
+          Object.assign(suivi, { actif: true, ancre: [z.x, z.y], ech: 1, angle: 0, perdu: 0 });
+          fx.zone = z; fx.etat = "suivi"; envoyer("zone", { raison: z.mode + " " + suivi.pts.length + " points" });
+        } else fx.raison = "décor sans relief (" + suivi.pts.length + " points)";
+      } else fx.raison = z.raison;
     } else fx.raison = segmenteur ? "masque pas prêt" : "segmentation " + etatSeg;
     if (fx.etat === "recherche" && t - fx.depuis > ATTENTE_MAX) { fx.etat = "annule"; envoyer("annule", { raison: fx.raison }); }
   }
-  if (fx.etat !== "actif" && fx.etat !== "abandon") { fx.visible = false; return null; }
-
-  const e = t - fx.t0;
-  const dTete = T.tete - T.apparition, dProche = T.proche - T.apparition, dFin = T.fin - T.apparition;
-  if (fx.etat === "actif" && e >= dFin) {                     // disparition nette
-    fx.etat = "fini"; fx.visible = false; envoyer("disparu");
+  if (fx.etat !== "suivi") { fx.visible = false; return null; }
+  if (suivi.perdu > 8) {                            // il ne reste pas collé : on l'efface, jamais de sticker
+    fx.etat = "annule"; fx.visible = false; envoyer("annule", { raison: "suivi perdu" });
     if (clips) for (const v of Object.values(clips)) v.pause();
     return null;
   }
-  if (fx.etat === "actif" && e >= dTete && !fx.envoye.tete) { fx.envoye.tete = 1; envoyer("tete"); }
-  if (fx.etat === "actif" && e >= dProche && !fx.envoye.proche) { fx.envoye.proche = 1; envoyer("proche"); }
 
-  const p = fx.place;
-  // avec la vidéo, la lumière vacille au moment exact où il relève la tête dans le clip
-  const tTete = clips && clipPret(clips.reveil) ? REVEIL_TETE - 0.12 : dTete;
-  const dt = e - tTete, dCri = e - dProche - GEL;
-  // le son, uniquement sur ce téléphone
-  if (fx.etat === "actif" && dt >= 0 && !fx.envoye.sonTete) { fx.envoye.sonTete = 1; jouer("gresille"); }
-  if (fx.etat === "actif" && dCri >= 0 && !fx.envoye.sonCri) { fx.envoye.sonCri = 1; jouer("cri"); }
-  if (fx.etat === "actif" && dCri >= CRI && !fx.envoye.sonSouffle) { fx.envoye.sonSouffle = 1; jouer("souffle"); }
-
-  // Les deux « hoquets » de la caméra : l'image se fige un instant, et quand elle repart, il a bougé.
-  if (fx.etat === "actif" && ((e >= dProche && e < dProche + GEL) || e >= dFin - GEL)) return { gel: true, prepGP: e < dFin - GEL };
-
-  // 16 s, juste après le hoquet : son visage en gros plan, collé derrière la tête de la personne, une demi-seconde.
-  if (fx.etat === "actif" && dCri >= 0 && dCri < CRI) {
-    const g = geometrieGP(p), secousse = (Math.random() - 0.5) * W * 0.02;
-    fx.visible = true;
-    return { gp: true, x: g.x + secousse, y: g.y + secousse * 0.5, w: g.w, h: g.h, k: 1, densite: 1, dist: 0, vacille: dCri < 0.06 ? 0.3 : 0 };
+  // deux apparitions : A (tête basse, très sombre, peu sortie) puis B (un peu plus sortie, regard caméra)
+  const phase = t >= T.a[0] && t < T.a[1] ? "A" : t >= T.b[0] && t < T.b[1] ? "B" : null;
+  if (t >= T.b[1]) { fx.etat = "fini"; fx.visible = false; envoyer("disparu"); if (clips) for (const v of Object.values(clips)) v.pause(); return null; }
+  if (!phase) {
+    if (fx.visible) { fx.visible = false; envoyer("disparu"); }
+    return { cache: true };
   }
-
-  // 13 s : la lumière vacille deux fois ; entre les deux, il a relevé la tête.
-  const vacille = dt < 0 ? 0 : dt < 0.07 ? 0.45 : dt < 0.15 ? 0 : dt < 0.25 ? 0.35 : 0;
-  const k = dt < 0.17 ? 0 : 1;
-  let densite = e < dTete ? 0.97 * lisse(e / FONDU_ENTREE) : 1;
-  if (fx.etat === "abandon") {
-    densite *= 1 - lisse((t - fx.sortie) / 0.25);
-    if (t - fx.sortie > 0.25) { fx.etat = "annule"; fx.visible = false; return null; }
+  const src = sourceClip(phase);
+  if (!fx.envoye[phase]) {
+    fx.envoye[phase] = 1; envoyer("apparition", { raison: phase });
+    if (src.el.tagName === "VIDEO") { for (const v of Object.values(clips)) if (v !== src.el) v.pause(); lancerClip(src.el, src.debut); }
   }
-  // il respire, il oscille à peine : une image figée, c'est un sticker
-  const souffle = 1 + 0.007 * Math.sin(t * 2 * Math.PI * 0.23);
-  const derive = Math.sin(t * 2 * Math.PI * 0.09 + 1) * W * 0.003;
-  let cx = p.cx, haut = p.haut, ech = 1, dist = e < dTete ? 0.6 : 0.5;
-  if (e >= dProche) {
-    // 16 s : d'un coup, juste derrière l'épaule, en partie caché par la personne — puis il avance encore.
-    if (!fx.pres) fx.pres = placerPres(p);
-    const avance = lisse((dCri - CRI) / 1.4);
-    ech = fx.pres.ech * (1 + 0.07 * avance);
-    cx = fx.pres.cx - p.cote * W * 0.015 * avance;
-    haut = fx.pres.haut;
-    dist = 0.15;
-  }
-  // Vidéo : « il se réveille » joué une fois depuis l'apparition, puis « il te fixe » en boucle.
-  let clip = null;
-  if (clips && fx.etat === "actif") {
-    if (e < REVEIL_FIN || !clipPret(clips.regard)) {
-      clip = clips.reveil;
-      if (!fx.envoye.clipReveil) { fx.envoye.clipReveil = 1; lancerClip(clip); }
-    } else {
-      clip = clips.regard;
-      if (!fx.envoye.clipRegard) { fx.envoye.clipRegard = 1; clips.reveil.pause(); lancerClip(clip, REGARD_DEBUT); }
-      if (clip.currentTime >= REGARD_FIN) clip.currentTime = REGARD_DEBUT;
-    }
-    if (clip.paused && !clip.ended && clip.lance) clip.play().catch(() => {});   // un navigateur qui la remet en pause : on relance
-    if (!clipPret(clip)) clip = null;
-  }
-  const vivant = clip ? 1 : souffle;                          // la vidéo respire déjà toute seule
-  const h = p.h * ech * vivant, w = p.w * ech;
-  const y = haut + (p.h * ech - h) * 0.9;                     // le souffle soulève les épaules, pas les pieds
+  if (src.el.tagName === "VIDEO" && src.el.paused && !src.el.ended && src.el.lance) src.el.play().catch(() => {});
   fx.visible = true;
-  return { x: cx + (clip ? 0 : derive) - w / 2, y, w, h, k, densite, dist, vacille, clip };
+  const debut = phase === "A" ? T.a[0] : T.b[0];
+  const entree = lisse((t - debut) / 0.25);         // une fraction de seconde pour sortir de l'ombre, pas plus
+  return {
+    phase, src, mode: fx.zone.mode, cote: fx.zone.cote,
+    sortie: phase === "A" ? 0.3 : 0.5,               // part de la tête qui dépasse du bord
+    gain: phase === "A" ? 0.35 : 0.5,
+    alpha: (phase === "A" ? 0.85 : 1) * entree,
+  };
 }
-
-// Le gros plan : visage juste à côté de la tête de la personne, côté libre ; le corps de la personne passe devant.
-function geometrieGP(p) {
-  const h = H * 1.15, w = h * (675 / 900);
-  const fxv = p.cote > 0 ? p.dTete + W * 0.1 : p.gTete - W * 0.1;   // centre de son visage
-  const fyv = Math.max(H * 0.3, p.yTete + H * 0.12);
-  return { x: fxv - w * 0.52, y: fyv - h * 0.47, w, h };
-}
-function preparerGP() {
-  const g = geometrieGP(fx.place);
-  etalonner(imgs[2], Math.round(g.w), Math.round(g.h), 0.05, 0.75, calquesGP);
-  gpPret = true;
-}
-
-// Position « tout près » : le plus possible derrière la personne, sans jamais cacher sa tête à lui.
-function placerPres(p) {
-  const ech = SAUT, h = p.h * ech, w = p.w * ech;
-  const haut = Math.max(-H * 0.02, p.haut - (h - p.h) * 0.3);
-  for (const recul of [0.32, 0.2, 0.08, 0]) {
-    const cx = p.cx - p.cote * w * recul;
-    const c = couverture({ x: cx - w * 0.2, y: haut, w: w * 0.4, h: h * 0.15 });
-    if (c.personne < 0.1 && c.incertain < 0.3) return { cx, haut, ech };
-  }
-  return { cx: p.cx, haut: p.haut - p.h * 0.05, ech: 1.15 };
-}
+const lisse = x => { x = Math.min(1, Math.max(0, x)); return x * x * (3 - 2 * x); };
 
 function dessinerWatcher(v) {
+  const [ax, ay] = suivi.ancre, X = ax * EX, Y = ay * EY;
+  const teteH = TETE * H * suivi.ech;
+  const cad = v.src.cadre;
+  const lh = teteH / cad.teteH, lw = lh * (cad.sw || 130) / (cad.sh || 170);
+  const boite = { x: X - lw, y: Y - lh * 0.6, w: lw * 2, h: lh * 1.4 };
   const now = performance.now();
-  if (now - tPiece > 300 || !piece) { mesurerPiece(v); tPiece = now; }
+  if (now - tPiece > 300 || !piece) { mesurerPiece(boite); tPiece = now; }
   if (!piece) return;
-  if (v.gp) {
-    if (!gpPret) preparerGP();
-    const c = calquesGP[grain].c;
-    ctx.drawImage(c, v.x, v.y, c.width, c.height);
-    dessinerPersonne(v.x, v.y, c.width, c.height);
-    if (v.vacille) { ctx.fillStyle = "rgba(0,0,0," + v.vacille + ")"; ctx.fillRect(0, 0, W, H); }
-    return;
+  const calque = fabriquerTete(v.src, lw, lh, v);
+  // centre de sa tête, en repère « bord » : x > 0 = côté sombre
+  const hx = v.mode === "bord" ? (v.sortie - 0.5) * teteH * 0.75 : 0;   // largeur de tête ≈ 0,75 × hauteur
+  const lx = hx - cad.teteX * lw, ly = -cad.teteY * lh;
+  const dessiner = (dx, dy, alpha) => {
+    ctx.save();
+    ctx.translate(X + dx, Y + dy);
+    ctx.rotate(suivi.angle);
+    if (v.cote < 0) ctx.scale(-1, 1);              // repère toujours orienté vers le côté sombre
+    if (v.mode === "bord") { ctx.beginPath(); ctx.rect(0, -lh * 2, lw * 2, lh * 4); ctx.clip(); }
+    ctx.globalAlpha = alpha;
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(calque, lx, ly, lw, lh);
+    ctx.restore();
+  };
+  // léger flou de bougé quand le téléphone bouge
+  const [vx, vy] = suivi.vitesse, vit = Math.hypot(vx, vy);
+  if (vit > 1.5) { dessiner(-vx * 0.5, -vy * 0.5, v.alpha * 0.45); dessiner(0, 0, v.alpha * 0.7); }
+  else dessiner(0, 0, v.alpha);
+  dessinerPersonne(boite.x, boite.y, boite.w, boite.h);
+}
+
+// test de Yann : la croix rouge doit rester collée au décor quand il bouge le téléphone
+function dessinerTemoin() {
+  ctx.save();
+  ctx.fillStyle = "#3f6";
+  for (const p of suivi.pts) ctx.fillRect(p[0] * EX - 1, p[1] * EY - 1, 2, 2);
+  if (suivi.ancre) {
+    const X = suivi.ancre[0] * EX, Y = suivi.ancre[1] * EY;
+    ctx.strokeStyle = "#f22"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.moveTo(X - 9, Y); ctx.lineTo(X + 9, Y); ctx.moveTo(X, Y - 9); ctx.lineTo(X, Y + 9); ctx.stroke();
   }
-  const lw = Math.max(4, Math.round(v.w)), lh = Math.max(8, Math.round(v.h));
-  if (now - tCalque > 250 || Math.abs(lh - calqueH) > 3) construireCalques(lw, lh, v.dist);
-
-  // Garde-fou détourage : si le contour de la personne devient flou près de la tête du Watcher, on l'efface.
-  if (fx.etat === "actif") {
-    const c = couverture({ x: v.x - v.w * 0.3, y: v.y, w: v.w * 1.6, h: v.h * 0.35 });
-    fx.mauvais = c.incertain > 0.35 ? fx.mauvais + 1 : Math.max(0, fx.mauvais - 1);
-    if (fx.mauvais > 10) { fx.etat = "abandon"; fx.sortie = tAppel(); envoyer("annule", { raison: "détourage incertain" }); }
-  }
-
-  sortie.width = calqueW; sortie.height = calqueH;
-  if (v.clip) {
-    // la vidéo, détourée et étalonnée sur la pièce à chaque image
-    etalonner(v.clip, calqueW, calqueH, v.dist, 0.6, calqueVideo, true);
-    sortieCtx.drawImage(calqueVideo[0].c, 0, 0);
-  } else {
-    // 1 -> 2 : fondu additif (pas de baisse de densité au milieu du fondu)
-    sortieCtx.globalCompositeOperation = "lighter";
-    sortieCtx.globalAlpha = 1 - v.k; sortieCtx.drawImage(calques[0][grain].c, 0, 0);
-    sortieCtx.globalAlpha = v.k;     sortieCtx.drawImage(calques[1][grain].c, 0, 0);
-  }
-  const ow = v.w * OMBRE_X, oh = v.h * OMBRE_Y;
-  const ombre = { x: v.x + v.w / 2 - ow / 2, y: v.y + v.h * 0.53 - oh / 2, w: ow, h: oh };
-  ctx.globalAlpha = 0.35 * v.densite;
-  ctx.drawImage(ombreCv, ombre.x, ombre.y, ombre.w, ombre.h);
-  ctx.globalAlpha = v.densite;
-  ctx.drawImage(sortie, v.x, v.y, v.w, v.h);
-  ctx.globalAlpha = 1;
-
-  const cy0 = Math.min(v.y, ombre.y), cy1 = Math.max(v.y + v.h, ombre.y + ombre.h);
-  dessinerPersonne(ombre.x, cy0, ombre.w, cy1 - cy0);
-
-  if (v.vacille) { ctx.fillStyle = "rgba(0,0,0," + v.vacille + ")"; ctx.fillRect(0, 0, W, H); }
+  ctx.restore();
 }
 
 // La personne détourée repasse devant, dans la zone touchée par le Watcher.
@@ -864,69 +954,6 @@ function dessinerPersonne(x, y, w, h) {
   ctx.restore();
 }
 
-// ── le son : synthétisé sur place, joué seulement sur le téléphone de la cible ──
-let audio = null;
-function preparerSon() {
-  if (!SON) return;
-  try {
-    audio = new (window.AudioContext || window.webkitAudioContext)();
-    const b = audio.createBuffer(1, 1, 22050), s = audio.createBufferSource();   // déverrouille iOS
-    s.buffer = b; s.connect(audio.destination); s.start(0);
-    audio.resume();
-  } catch { audio = null; }
-}
-function bruitBlanc(dur) {
-  const n = Math.floor(audio.sampleRate * dur), b = audio.createBuffer(1, n, audio.sampleRate), d = b.getChannelData(0);
-  for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
-  return b;
-}
-function enveloppe(t, crete, attaque, fin) {
-  const g = audio.createGain();
-  g.gain.setValueAtTime(0.0001, t);
-  g.gain.exponentialRampToValueAtTime(crete, t + attaque);
-  g.gain.exponentialRampToValueAtTime(0.0001, t + fin);
-  return g;
-}
-function jouer(type) {
-  if (!audio) return;
-  try {
-    audio.resume();
-    const t = audio.currentTime + 0.01;
-    const sortieSon = audio.createGain(); sortieSon.gain.value = 0.9; sortieSon.connect(audio.destination);
-    if (type === "gresille") {          // deux claquements électriques, calés sur le vacillement de la lumière
-      for (const [d0, dd] of [[0, 0.07], [0.15, 0.1]]) {
-        const s = audio.createBufferSource(); s.buffer = bruitBlanc(dd);
-        const f = audio.createBiquadFilter(); f.type = "highpass"; f.frequency.value = 2500;
-        const g = enveloppe(t + d0, 0.3, 0.004, dd);
-        s.connect(f); f.connect(g); g.connect(sortieSon); s.start(t + d0);
-      }
-    } else if (type === "cri") {        // choc grave + craquement d'articulations
-      const o = audio.createOscillator(); o.type = "sine";
-      o.frequency.setValueAtTime(70, t); o.frequency.exponentialRampToValueAtTime(28, t + 0.5);
-      const g = enveloppe(t, 1, 0.015, 0.7);
-      o.connect(g); g.connect(sortieSon); o.start(t); o.stop(t + 0.75);
-      const dur = 0.7, n = Math.floor(audio.sampleRate * dur), b = audio.createBuffer(1, n, audio.sampleRate), d = b.getChannelData(0);
-      for (let i = 0; i < n; i += Math.floor(audio.sampleRate * (0.012 + Math.random() * 0.03))) {
-        const amp = 0.5 + Math.random() * 0.5;
-        for (let k = 0; k < 60 && i + k < n; k++) d[i + k] = (Math.random() * 2 - 1) * amp * Math.exp(-k / 12);
-      }
-      const s = audio.createBufferSource(); s.buffer = b;
-      const f = audio.createBiquadFilter(); f.type = "bandpass"; f.frequency.value = 700; f.Q.value = 3;
-      const g2 = enveloppe(t, 0.8, 0.01, dur);
-      s.connect(f); f.connect(g2); g2.connect(sortieSon); s.start(t);
-    } else if (type === "souffle") {    // expiration lente et rauque, tout près
-      const dur = 1.3, s = audio.createBufferSource(); s.buffer = bruitBlanc(dur);
-      const f = audio.createBiquadFilter(); f.type = "bandpass"; f.Q.value = 1.2;
-      f.frequency.setValueAtTime(500, t); f.frequency.linearRampToValueAtTime(300, t + dur);
-      const g = enveloppe(t, 0.45, 0.25, dur);
-      const lfo = audio.createOscillator(); lfo.frequency.value = 32;
-      const lg = audio.createGain(); lg.gain.value = 0.2;
-      lfo.connect(lg); lg.connect(g.gain); lfo.start(t); lfo.stop(t + dur);
-      s.connect(f); f.connect(g); g.connect(sortieSon); s.start(t);
-    }
-  } catch {}
-}
-
 let fpsRendu = 0, fpsSeg = 0, tFps = performance.now(), nbR = 0, nbS = 0, tEtat = 0;
 function rendu() {
   requestAnimationFrame(rendu);
@@ -937,17 +964,16 @@ function rendu() {
   nouvelleImage = false;
   if (segmenteur) { try { segmenterImage(); } catch (e) { etatSeg = "erreur " + e.message; segmenteur = null; } }
 
-  const v = piloter(tAppel());
-  if (v && v.gel) {                     // hoquet : la vignette garde l'image précédente
-    if (v.prepGP && !gpPret && piece) preparerGP();   // on prépare le gros plan pendant que l'image est figée
-    return;
-  }
-
   ctx.setTransform(-1, 0, 0, 1, W, 0);
   ctx.drawImage(cam, SRC.x, SRC.y, SRC.w, SRC.h, 0, 0, W, H);
   ctx.setTransform(1, 0, 0, 1, 0, 0);
 
-  if (v && segmenteur) { grain = (grain + 1) % 3; dessinerWatcher(v); }
+  // le décor est suivi dès juste avant la sélection, sur l'image caméra seule
+  const t = tAppel();
+  if (t != null && t >= T.selection - 0.5 && (fx.etat === "attente" || fx.etat === "recherche" || fx.etat === "suivi")) suivreDecor();
+  const v = piloter(t);
+  if (v && !v.cache && segmenteur) dessinerWatcher(v);
+  if (SUIVI_TEST) dessinerTemoin();
   nbR++;
 
   const now = performance.now();
@@ -968,7 +994,7 @@ if (ROLE === "cible") {
         ev: "etat", fps: Math.round(fpsRendu), seg: etatSeg + " " + fpsSeg + "/s",
         cam: cam.readyState + " " + cam.videoWidth + "×" + cam.videoHeight + (cam.paused ? " EN PAUSE" : ""),
         vign: W + "×" + H + " masque " + mw + "×" + mh + " personne " + Math.round(aire * 100) + "%",
-        effet: fx.etat, raison: fx.raison,
+        effet: fx.etat + (fx.zone ? " " + fx.zone.mode : "") + " suivi " + suivi.nbIn + "/" + suivi.pts.length, raison: fx.raison,
         clip: r ? r.readyState + (r.error ? " ERREUR" : "") + " t=" + r.currentTime.toFixed(1) : "non",
         ua: navigator.userAgent.replace(/^Mozilla\/5\.0 \(/, "").slice(0, 70),
       });
@@ -990,7 +1016,8 @@ setInterval(() => {
   else {
     l.push("seg " + etatSeg + "  " + fpsSeg + " /s   rendu " + fpsRendu.toFixed(0) + " ips");
     l.push("vignette " + W + "×" + H + "  masque " + mw + "×" + mh + "  personne " + (aire * 100).toFixed(0) + "%");
-    l.push("effet " + fx.etat + (fx.raison && fx.etat !== "actif" ? " (" + fx.raison + ")" : "") + (fx.place ? "  côté " + (fx.place.cote > 0 ? "droit" : "gauche") : ""));
+    l.push("effet " + fx.etat + (fx.raison && fx.etat !== "suivi" ? " (" + fx.raison + ")" : "") + (fx.zone ? "  " + fx.zone.mode + " côté sombre " + (fx.zone.cote > 0 ? "droit" : "gauche") : ""));
+    l.push("suivi " + suivi.nbIn + "/" + suivi.pts.length + " points  échelle " + suivi.ech.toFixed(2) + "  angle " + (suivi.angle * 57.3).toFixed(1) + "°");
     if (piece) l.push("pièce noir " + piece.noir.toFixed(0) + " lum " + piece.lum.toFixed(0) + " bruit " + piece.bruit.toFixed(1) +
                       " rgb " + [piece.r, piece.g, piece.b].map(x => x.toFixed(0)).join(","));
   }
