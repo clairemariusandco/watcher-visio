@@ -830,7 +830,7 @@ function fabriquerTete(src, lw, lh, v) {
       const nl = (Math.random() + Math.random() + Math.random() - 1.5) * 2 * sig;
       for (let c = 0; c < 3; c++) {
         const val = Math.max(0, s[k + c] - 6) * 1.05;                 // contraste écrasé
-        let o = (base + val * v.gain) * teinte[c] + nl + (Math.random() - 0.5) * sig * 0.5;
+        let o = (base + val * v.gain * LUM) * teinte[c] + nl + (Math.random() - 0.5) * sig * 0.5;
         s[k + c] = o > plafond ? plafond : o;
       }
       s[k + 3] = a * 255;
@@ -845,7 +845,8 @@ function fabriquerTete(src, lw, lh, v) {
 
 // ── la chronologie ──
 const SUIVI_TEST = P.has("suivi");                  // test de Yann : croix rouge sur l'ancre, tête visible en continu
-const TETE = 0.1 * (parseFloat(P.get("taille")) || 1);   // hauteur de la tête (fraction de la vignette)
+const TETE = 0.1 * (parseFloat(P.get("taille")) || 1);   // hauteur de la tête (fraction de la vignette) ; &taille=1.5 pour régler
+const LUM = parseFloat(P.get("lum")) || 1;              // visibilité de son visage ; &lum=1.5 pour régler
 // &suivi : sélection à 3 s, puis les deux apparitions rejouées en boucle toutes les 6 s (pour juger l'accroche et la matière)
 const T = SUIVI_TEST ? { selection: 3, a: [4, 5.5], b: [7, 8.5], cycle: 6 } : { selection: 10, a: [12, 13.5], b: [16, 17.5] };
 const ATTENTE_MAX = 4;                              // pas de zone trouvée : on renonce
