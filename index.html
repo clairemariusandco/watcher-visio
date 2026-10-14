@@ -142,11 +142,13 @@ const ATTENTE_MAX = 8;      // pas de place libre derrière la personne : on att
 const HAUTEUR = 0.68 * (parseFloat(new URLSearchParams(location.search).get("taille")) || 1);  // hauteur du Watcher (fraction de la vignette) ; &taille=1.2 pour régler
 const SAUT = 1.45;          // à 16 s il est d'un coup beaucoup plus près
 const GEL = 0.13;           // durée d'un hoquet de caméra (image figée)
+const CRI = 0.5;            // durée du gros plan (image 3)
 
 const P = new URLSearchParams(location.search);
 const SALLE = P.get("r");
 const SOLO = P.has("solo");
 const DEBUG = P.has("debug");
+const SON = P.get("son") !== "0";   // &son=0 pour couper le son
 const ROLE = SOLO ? "solo" : SALLE ? "cible" : "hote";
 const $ = id => document.getElementById(id);
 
@@ -275,6 +277,7 @@ function recevoirHote(m) {
 // ───────────────────────── cible ─────────────────────────
 $("btRejoindre").onclick = async () => {
   try { flux = await ouvrirCamera(); } catch (e) { return erreurCamera(e, $("msgCible")); }
+  preparerSon();
   demarrerVignette();
   montrer("appel");
   $("placeDistant").textContent = "Connexion…";
@@ -307,6 +310,7 @@ function envoyer(ev, extra = {}) {
 $("btSolo").onclick = async () => {
   try { flux = await ouvrirCamera(); } catch (e) { return erreurCamera(e, $("msgSolo")); }
   flux.getAudioTracks().forEach(t => t.stop());
+  preparerSon();
   demarrerVignette();
   montrer("appel");
   $("placeDistant").textContent = "Mode solo — pas de correspondant.\nRegarde ta vignette.";
@@ -353,9 +357,10 @@ async function chargerSegmenteur() {
 }
 if (ROLE !== "hote") chargerSegmenteur();
 
-const imgs = [new Image(), new Image()];
+const imgs = [new Image(), new Image(), new Image()];
 imgs[0].src = "assets/watcher1.png";
 imgs[1].src = "assets/watcher2.png";
+imgs[2].src = "assets/watcher3.png";   // gros plan : une demi-seconde, au moment du saut
 const ASPECT = 158 / 720;
 
 let nouvelleImage = true, nbImagesCam = 0;
@@ -495,7 +500,7 @@ function trouverPlace() {
     const tete = { x: cx - w * 0.2, y: haut, w: w * 0.4, h: h * 0.16 };
     const c = couverture(tete);
     if (c.personne > 0.08 || c.incertain > 0.3) continue;
-    choix.push({ cote, cx, haut, w, h, libre: cote > 0 ? W - dTete : gTete });
+    choix.push({ cote, cx, haut, w, h, libre: cote > 0 ? W - dTete : gTete, gTete, dTete, yTete });
   }
   if (!choix.length) return { raison: "pas de place libre" };
   choix.sort((a, b) => b.libre - a.libre);
@@ -548,12 +553,31 @@ const petit = document.createElement("canvas"), petitCtx = petit.getContext("2d"
 const baseCv = document.createElement("canvas"), baseCtx = baseCv.getContext("2d", { willReadFrequently: true });
 function nouveauxCalques() { return [0, 1, 2].map(() => { const c = document.createElement("canvas"); return { c, x: c.getContext("2d") }; }); }
 const calques = [nouveauxCalques(), nouveauxCalques()];
+const calquesGP = nouveauxCalques();
+let gpPret = false;
 let calqueW = 0, calqueH = 0, tCalque = 0;
 const ombreCv = document.createElement("canvas"), ombreCtx = ombreCv.getContext("2d");
 const OMBRE_X = 2.4, OMBRE_Y = 1.3;   // taille du calque d'ombre par rapport au Watcher
 
 function construireCalques(lw, lh, dist) {
   calqueW = lw; calqueH = lh;
+  etalonner(imgs[0], lw, lh, dist, 0.6, calques[0]);
+  etalonner(imgs[1], lw, lh, dist, 0.6, calques[1]);
+  // son ombre sur le mur : une tache sombre très floue qui assombrit la pièce autour de lui
+  // (marge transparente tout autour, sinon le flou se coupe net au bord : un rectangle visible)
+  const bw = lw / 7, bh = lh / 7;
+  ombreCv.width = Math.ceil(bw * OMBRE_X); ombreCv.height = Math.ceil(bh * OMBRE_Y);
+  ombreCtx.imageSmoothingQuality = "high";
+  ombreCtx.drawImage(calques[0][0].c, (ombreCv.width - bw * 1.25) / 2, (ombreCv.height - bh * 1.05) / 2, bw * 1.25, bh * 1.05);
+  ombreCtx.globalCompositeOperation = "source-in";
+  ombreCtx.fillStyle = "#000"; ombreCtx.fillRect(0, 0, ombreCv.width, ombreCv.height);
+  ombreCtx.globalCompositeOperation = "source-over";
+  tCalque = performance.now();
+}
+
+// Étalonne une image du Watcher sur la pièce (noir, teinte, flou, grain) vers 3 variantes de grain.
+// fonduBas : à partir de quelle hauteur (0-1) le bas du corps se perd dans l'ombre.
+function etalonner(img, lw, lh, dist, fonduBas, cibles) {
   const R = piece;
   const base = Math.min(R.noir * 0.55, R.lum * 0.22, 32);   // plus sombre que le noir de la pièce : une vraie présence, pas une ombre
   const moy = (R.r + R.g + R.b) / 3 || 1;
@@ -562,11 +586,11 @@ function construireCalques(lw, lh, dist) {
   const brume = 0.05 * dist;                                  // plus loin = noyé dans la pièce
   const flou = 1.1 + 0.5 * dist;
   const sig = R.bruit;
-  for (let im = 0; im < 2; im++) {
+  {
     petit.width = Math.max(2, Math.round(lw / flou)); petit.height = Math.max(2, Math.round(lh / flou));
     petitCtx.imageSmoothingQuality = "high";
     petitCtx.clearRect(0, 0, petit.width, petit.height);
-    petitCtx.drawImage(imgs[im], 0, 0, petit.width, petit.height);
+    petitCtx.drawImage(img, 0, 0, petit.width, petit.height);
     baseCv.width = lw; baseCv.height = lh;
     baseCtx.imageSmoothingQuality = "high";
     baseCtx.drawImage(petit, 0, 0, lw, lh);
@@ -576,7 +600,7 @@ function construireCalques(lw, lh, dist) {
     for (let y = 0; y < lh; y++) {
       const yn = y / lh;
       // les jambes se perdent dans l'ombre : pas de pieds plantés au mauvais endroit
-      let f = yn < 0.6 ? 1 : yn > 0.97 ? 0 : 1 - (yn - 0.6) / 0.37;
+      let f = yn < fonduBas ? 1 : yn > 0.97 ? 0 : 1 - (yn - fonduBas) / (0.97 - fonduBas);
       f = f * f * (3 - 2 * f);
       for (let x = 0; x < lw; x++) {
         const k = (y * lw + x) * 4;
@@ -591,7 +615,7 @@ function construireCalques(lw, lh, dist) {
       }
     }
     for (let g = 0; g < 3; g++) {
-      const { c, x } = calques[im][g];
+      const { c, x } = cibles[g];
       c.width = lw; c.height = lh;
       const out = x.createImageData(lw, lh), o = out.data;
       for (let k = 0; k < o.length; k += 4) {
@@ -605,23 +629,13 @@ function construireCalques(lw, lh, dist) {
       x.putImageData(out, 0, 0);
     }
   }
-  // son ombre sur le mur : une tache sombre très floue qui assombrit la pièce autour de lui
-  // (marge transparente tout autour, sinon le flou se coupe net au bord : un rectangle visible)
-  const bw = lw / 7, bh = lh / 7;
-  ombreCv.width = Math.ceil(bw * OMBRE_X); ombreCv.height = Math.ceil(bh * OMBRE_Y);
-  ombreCtx.imageSmoothingQuality = "high";
-  ombreCtx.drawImage(calques[0][0].c, (ombreCv.width - bw * 1.25) / 2, (ombreCv.height - bh * 1.05) / 2, bw * 1.25, bh * 1.05);
-  ombreCtx.globalCompositeOperation = "source-in";
-  ombreCtx.fillStyle = "#000"; ombreCtx.fillRect(0, 0, ombreCv.width, ombreCv.height);
-  ombreCtx.globalCompositeOperation = "source-over";
-  tCalque = performance.now();
 }
 
 // ── l'effet ──
 const fx = {};
 function reinitialiserEffet() {
   Object.assign(fx, { etat: "attente", place: null, t0: 0, depuis: 0, raison: "", visible: false, mauvais: 0, sortie: 0, envoye: {}, pres: null });
-  piece = null; patchPrec = null;
+  piece = null; patchPrec = null; gpPret = false;
 }
 reinitialiserEffet();
 
@@ -650,12 +664,24 @@ function piloter(t) {
   if (fx.etat === "actif" && e >= dTete && !fx.envoye.tete) { fx.envoye.tete = 1; envoyer("tete"); }
   if (fx.etat === "actif" && e >= dProche && !fx.envoye.proche) { fx.envoye.proche = 1; envoyer("proche"); }
 
-  // Les deux « hoquets » de la caméra : l'image se fige un instant, et quand elle repart, il a bougé.
-  if (fx.etat === "actif" && ((e >= dProche && e < dProche + GEL) || e >= dFin - GEL)) return { gel: true };
-
   const p = fx.place;
+  const dt = e - dTete, dCri = e - dProche - GEL;
+  // le son, uniquement sur ce téléphone
+  if (fx.etat === "actif" && dt >= 0 && !fx.envoye.sonTete) { fx.envoye.sonTete = 1; jouer("gresille"); }
+  if (fx.etat === "actif" && dCri >= 0 && !fx.envoye.sonCri) { fx.envoye.sonCri = 1; jouer("cri"); }
+  if (fx.etat === "actif" && dCri >= CRI && !fx.envoye.sonSouffle) { fx.envoye.sonSouffle = 1; jouer("souffle"); }
+
+  // Les deux « hoquets » de la caméra : l'image se fige un instant, et quand elle repart, il a bougé.
+  if (fx.etat === "actif" && ((e >= dProche && e < dProche + GEL) || e >= dFin - GEL)) return { gel: true, prepGP: e < dFin - GEL };
+
+  // 16 s, juste après le hoquet : son visage en gros plan, collé derrière la tête de la personne, une demi-seconde.
+  if (fx.etat === "actif" && dCri >= 0 && dCri < CRI) {
+    const g = geometrieGP(p), secousse = (Math.random() - 0.5) * W * 0.02;
+    fx.visible = true;
+    return { gp: true, x: g.x + secousse, y: g.y + secousse * 0.5, w: g.w, h: g.h, k: 1, densite: 1, dist: 0, vacille: dCri < 0.06 ? 0.3 : 0 };
+  }
+
   // 13 s : la lumière vacille deux fois ; entre les deux, il a relevé la tête.
-  const dt = e - dTete;
   const vacille = dt < 0 ? 0 : dt < 0.07 ? 0.45 : dt < 0.15 ? 0 : dt < 0.25 ? 0.35 : 0;
   const k = dt < 0.17 ? 0 : 1;
   let densite = e < dTete ? 0.97 * lisse(e / FONDU_ENTREE) : 1;
@@ -670,7 +696,7 @@ function piloter(t) {
   if (e >= dProche) {
     // 16 s : d'un coup, juste derrière l'épaule, en partie caché par la personne — puis il avance encore.
     if (!fx.pres) fx.pres = placerPres(p);
-    const avance = lisse((e - dProche - GEL) / 1.6);
+    const avance = lisse((dCri - CRI) / 1.4);
     ech = fx.pres.ech * (1 + 0.07 * avance);
     cx = fx.pres.cx - p.cote * W * 0.015 * avance;
     haut = fx.pres.haut;
@@ -680,6 +706,19 @@ function piloter(t) {
   const y = haut + (p.h * ech - h) * 0.9;                     // le souffle soulève les épaules, pas les pieds
   fx.visible = true;
   return { x: cx + derive - w / 2, y, w, h, k, densite, dist, vacille };
+}
+
+// Le gros plan : visage juste à côté de la tête de la personne, côté libre ; le corps de la personne passe devant.
+function geometrieGP(p) {
+  const h = H * 1.15, w = h * (675 / 900);
+  const fxv = p.cote > 0 ? p.dTete + W * 0.1 : p.gTete - W * 0.1;   // centre de son visage
+  const fyv = Math.max(H * 0.3, p.yTete + H * 0.12);
+  return { x: fxv - w * 0.52, y: fyv - h * 0.47, w, h };
+}
+function preparerGP() {
+  const g = geometrieGP(fx.place);
+  etalonner(imgs[2], Math.round(g.w), Math.round(g.h), 0.05, 0.75, calquesGP);
+  gpPret = true;
 }
 
 // Position « tout près » : le plus possible derrière la personne, sans jamais cacher sa tête à lui.
@@ -698,6 +737,14 @@ function dessinerWatcher(v) {
   const now = performance.now();
   if (now - tPiece > 300 || !piece) { mesurerPiece(v); tPiece = now; }
   if (!piece) return;
+  if (v.gp) {
+    if (!gpPret) preparerGP();
+    const c = calquesGP[grain].c;
+    ctx.drawImage(c, v.x, v.y, c.width, c.height);
+    dessinerPersonne(v.x, v.y, c.width, c.height);
+    if (v.vacille) { ctx.fillStyle = "rgba(0,0,0," + v.vacille + ")"; ctx.fillRect(0, 0, W, H); }
+    return;
+  }
   const lw = Math.max(4, Math.round(v.w)), lh = Math.max(8, Math.round(v.h));
   if (now - tCalque > 250 || Math.abs(lh - calqueH) > 3) construireCalques(lw, lh, v.dist);
 
@@ -721,7 +768,14 @@ function dessinerWatcher(v) {
   ctx.drawImage(sortie, v.x, v.y, v.w, v.h);
   ctx.globalAlpha = 1;
 
-  // la personne repasse devant
+  const cy0 = Math.min(v.y, ombre.y), cy1 = Math.max(v.y + v.h, ombre.y + ombre.h);
+  dessinerPersonne(ombre.x, cy0, ombre.w, cy1 - cy0);
+
+  if (v.vacille) { ctx.fillStyle = "rgba(0,0,0," + v.vacille + ")"; ctx.fillRect(0, 0, W, H); }
+}
+
+// La personne détourée repasse devant, dans la zone touchée par le Watcher.
+function dessinerPersonne(x, y, w, h) {
   persCtx.clearRect(0, 0, W, H);
   persCtx.setTransform(-1, 0, 0, 1, W, 0);
   persCtx.drawImage(cam, SRC.x, SRC.y, SRC.w, SRC.h, 0, 0, W, H);
@@ -730,12 +784,72 @@ function dessinerWatcher(v) {
   persCtx.globalCompositeOperation = "source-over";
   persCtx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.save();
-  const cy0 = Math.min(v.y, ombre.y) - 6, cy1 = Math.max(v.y + v.h, ombre.y + ombre.h) + 6;
-  ctx.beginPath(); ctx.rect(ombre.x - 6, cy0, ombre.w + 12, cy1 - cy0); ctx.clip();
+  ctx.beginPath(); ctx.rect(x - 6, y - 6, w + 12, h + 12); ctx.clip();
   ctx.drawImage(persCv, 0, 0);
   ctx.restore();
+}
 
-  if (v.vacille) { ctx.fillStyle = "rgba(0,0,0," + v.vacille + ")"; ctx.fillRect(0, 0, W, H); }
+// ── le son : synthétisé sur place, joué seulement sur le téléphone de la cible ──
+let audio = null;
+function preparerSon() {
+  if (!SON) return;
+  try {
+    audio = new (window.AudioContext || window.webkitAudioContext)();
+    const b = audio.createBuffer(1, 1, 22050), s = audio.createBufferSource();   // déverrouille iOS
+    s.buffer = b; s.connect(audio.destination); s.start(0);
+    audio.resume();
+  } catch { audio = null; }
+}
+function bruitBlanc(dur) {
+  const n = Math.floor(audio.sampleRate * dur), b = audio.createBuffer(1, n, audio.sampleRate), d = b.getChannelData(0);
+  for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+  return b;
+}
+function enveloppe(t, crete, attaque, fin) {
+  const g = audio.createGain();
+  g.gain.setValueAtTime(0.0001, t);
+  g.gain.exponentialRampToValueAtTime(crete, t + attaque);
+  g.gain.exponentialRampToValueAtTime(0.0001, t + fin);
+  return g;
+}
+function jouer(type) {
+  if (!audio) return;
+  try {
+    audio.resume();
+    const t = audio.currentTime + 0.01;
+    const sortieSon = audio.createGain(); sortieSon.gain.value = 0.9; sortieSon.connect(audio.destination);
+    if (type === "gresille") {          // deux claquements électriques, calés sur le vacillement de la lumière
+      for (const [d0, dd] of [[0, 0.07], [0.15, 0.1]]) {
+        const s = audio.createBufferSource(); s.buffer = bruitBlanc(dd);
+        const f = audio.createBiquadFilter(); f.type = "highpass"; f.frequency.value = 2500;
+        const g = enveloppe(t + d0, 0.3, 0.004, dd);
+        s.connect(f); f.connect(g); g.connect(sortieSon); s.start(t + d0);
+      }
+    } else if (type === "cri") {        // choc grave + craquement d'articulations
+      const o = audio.createOscillator(); o.type = "sine";
+      o.frequency.setValueAtTime(70, t); o.frequency.exponentialRampToValueAtTime(28, t + 0.5);
+      const g = enveloppe(t, 1, 0.015, 0.7);
+      o.connect(g); g.connect(sortieSon); o.start(t); o.stop(t + 0.75);
+      const dur = 0.7, n = Math.floor(audio.sampleRate * dur), b = audio.createBuffer(1, n, audio.sampleRate), d = b.getChannelData(0);
+      for (let i = 0; i < n; i += Math.floor(audio.sampleRate * (0.012 + Math.random() * 0.03))) {
+        const amp = 0.5 + Math.random() * 0.5;
+        for (let k = 0; k < 60 && i + k < n; k++) d[i + k] = (Math.random() * 2 - 1) * amp * Math.exp(-k / 12);
+      }
+      const s = audio.createBufferSource(); s.buffer = b;
+      const f = audio.createBiquadFilter(); f.type = "bandpass"; f.frequency.value = 700; f.Q.value = 3;
+      const g2 = enveloppe(t, 0.8, 0.01, dur);
+      s.connect(f); f.connect(g2); g2.connect(sortieSon); s.start(t);
+    } else if (type === "souffle") {    // expiration lente et rauque, tout près
+      const dur = 1.3, s = audio.createBufferSource(); s.buffer = bruitBlanc(dur);
+      const f = audio.createBiquadFilter(); f.type = "bandpass"; f.Q.value = 1.2;
+      f.frequency.setValueAtTime(500, t); f.frequency.linearRampToValueAtTime(300, t + dur);
+      const g = enveloppe(t, 0.45, 0.25, dur);
+      const lfo = audio.createOscillator(); lfo.frequency.value = 32;
+      const lg = audio.createGain(); lg.gain.value = 0.2;
+      lfo.connect(lg); lg.connect(g.gain); lfo.start(t); lfo.stop(t + dur);
+      s.connect(f); f.connect(g); g.connect(sortieSon); s.start(t);
+    }
+  } catch {}
 }
 
 let fpsRendu = 0, fpsSeg = 0, tFps = performance.now(), nbR = 0, nbS = 0, tEtat = 0;
@@ -749,7 +863,10 @@ function rendu() {
   if (segmenteur) { try { segmenterImage(); } catch (e) { etatSeg = "erreur " + e.message; segmenteur = null; } }
 
   const v = piloter(tAppel());
-  if (v && v.gel) return;               // hoquet : la vignette garde l'image précédente
+  if (v && v.gel) {                     // hoquet : la vignette garde l'image précédente
+    if (v.prepGP && !gpPret && piece) preparerGP();   // on prépare le gros plan pendant que l'image est figée
+    return;
+  }
 
   ctx.setTransform(-1, 0, 0, 1, W, 0);
   ctx.drawImage(cam, SRC.x, SRC.y, SRC.w, SRC.h, 0, 0, W, H);
