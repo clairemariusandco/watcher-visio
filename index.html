@@ -278,6 +278,7 @@ function recevoirHote(m) {
 $("btRejoindre").onclick = async () => {
   try { flux = await ouvrirCamera(); } catch (e) { return erreurCamera(e, $("msgCible")); }
   preparerSon();
+  deverrouillerClips();
   demarrerVignette();
   montrer("appel");
   $("placeDistant").textContent = "Connexion…";
@@ -311,6 +312,7 @@ $("btSolo").onclick = async () => {
   try { flux = await ouvrirCamera(); } catch (e) { return erreurCamera(e, $("msgSolo")); }
   flux.getAudioTracks().forEach(t => t.stop());
   preparerSon();
+  deverrouillerClips();
   demarrerVignette();
   montrer("appel");
   $("placeDistant").textContent = "Mode solo — pas de correspondant.\nRegarde ta vignette.";
@@ -362,6 +364,28 @@ imgs[0].src = "assets/watcher1.png";
 imgs[1].src = "assets/watcher2.png";
 imgs[2].src = "assets/watcher3.png";   // gros plan : une demi-seconde, au moment du saut
 const ASPECT = 158 / 720;
+
+// Les clips vidéo sur fond vert (Kling) : quand ils sont chargés, ils remplacent les images 1 et 2.
+// Même cadrage que les PNG (outils/clips.sh), donc même placement.
+function clipVideo(src, boucle) {
+  const v = document.createElement("video");
+  v.src = src; v.muted = true; v.playsInline = true; v.setAttribute("playsinline", ""); v.preload = "auto"; v.loop = boucle;
+  v.style.cssText = "position:fixed;left:0;top:0;width:2px;height:2px;opacity:0;pointer-events:none";
+  document.body.appendChild(v);
+  return v;
+}
+const clips = ROLE === "hote" || P.get("video") === "0" ? null
+  : { reveil: clipVideo("assets/watcher_reveil.mp4", false), regard: clipVideo("assets/watcher_regard.mp4", true) };
+// watcher_reveil : tête baissée, penche la tête, puis la relève d'un coup vers REVEIL_TETE s et fixe la caméra.
+// watcher_regard : il fixe la caméra et respire, en boucle (après le gros plan).
+const REVEIL_TETE = 3.25, REVEIL_FIN = 5.0;
+const clipPret = v => v && v.readyState >= 2 && !v.error;
+// iOS ne charge et ne lance une vidéo qu'après un geste : on les démarre/arrête au clic « Rejoindre ».
+function deverrouillerClips() {
+  if (clips) for (const v of Object.values(clips)) v.play().then(() => v.pause()).catch(() => {});
+}
+const calqueVideo = nouveauxCalquesUn();
+function nouveauxCalquesUn() { const c = document.createElement("canvas"); return [{ c, x: c.getContext("2d") }]; }
 
 let nouvelleImage = true, nbImagesCam = 0;
 function surveillerImages() {
@@ -577,7 +601,8 @@ function construireCalques(lw, lh, dist) {
 
 // Étalonne une image du Watcher sur la pièce (noir, teinte, flou, grain) vers 3 variantes de grain.
 // fonduBas : à partir de quelle hauteur (0-1) le bas du corps se perd dans l'ombre.
-function etalonner(img, lw, lh, dist, fonduBas, cibles) {
+// cle : la source est une vidéo sur fond vert, on retire le vert ici, image par image.
+function etalonner(img, lw, lh, dist, fonduBas, cibles, cle = false) {
   const R = piece;
   const base = Math.min(R.noir * 0.55, R.lum * 0.22, 32);   // plus sombre que le noir de la pièce : une vraie présence, pas une ombre
   const moy = (R.r + R.g + R.b) / 3 || 1;
@@ -596,6 +621,14 @@ function etalonner(img, lw, lh, dist, fonduBas, cibles) {
     baseCtx.drawImage(petit, 0, 0, lw, lh);
     const src = baseCtx.getImageData(0, 0, lw, lh);
     const s = src.data;
+    if (cle) {
+      for (let k = 0; k < s.length; k += 4) {
+        const r = s[k], g = s[k + 1], b = s[k + 2], m = r > b ? r : b;
+        const al = 1 - Math.min(1, Math.max(0, (g - m - 22) / 70));
+        if (g > m) s[k + 1] = m;                              // plus aucun vert sur les bords
+        s[k + 3] = al < 0.04 ? 0 : al * 255;
+      }
+    }
     const etal = new Float32Array(s.length);
     for (let y = 0; y < lh; y++) {
       const yn = y / lh;
@@ -614,7 +647,7 @@ function etalonner(img, lw, lh, dist, fonduBas, cibles) {
         etal[k + 3] = s[k + 3] * f;
       }
     }
-    for (let g = 0; g < 3; g++) {
+    for (let g = 0; g < cibles.length; g++) {
       const { c, x } = cibles[g];
       c.width = lw; c.height = lh;
       const out = x.createImageData(lw, lh), o = out.data;
@@ -659,13 +692,17 @@ function piloter(t) {
   const e = t - fx.t0;
   const dTete = T.tete - T.apparition, dProche = T.proche - T.apparition, dFin = T.fin - T.apparition;
   if (fx.etat === "actif" && e >= dFin) {                     // disparition nette
-    fx.etat = "fini"; fx.visible = false; envoyer("disparu"); return null;
+    fx.etat = "fini"; fx.visible = false; envoyer("disparu");
+    if (clips) for (const v of Object.values(clips)) v.pause();
+    return null;
   }
   if (fx.etat === "actif" && e >= dTete && !fx.envoye.tete) { fx.envoye.tete = 1; envoyer("tete"); }
   if (fx.etat === "actif" && e >= dProche && !fx.envoye.proche) { fx.envoye.proche = 1; envoyer("proche"); }
 
   const p = fx.place;
-  const dt = e - dTete, dCri = e - dProche - GEL;
+  // avec la vidéo, la lumière vacille au moment exact où il relève la tête dans le clip
+  const tTete = clips && clipPret(clips.reveil) ? REVEIL_TETE - 0.12 : dTete;
+  const dt = e - tTete, dCri = e - dProche - GEL;
   // le son, uniquement sur ce téléphone
   if (fx.etat === "actif" && dt >= 0 && !fx.envoye.sonTete) { fx.envoye.sonTete = 1; jouer("gresille"); }
   if (fx.etat === "actif" && dCri >= 0 && !fx.envoye.sonCri) { fx.envoye.sonCri = 1; jouer("cri"); }
@@ -702,10 +739,23 @@ function piloter(t) {
     haut = fx.pres.haut;
     dist = 0.15;
   }
-  const h = p.h * ech * souffle, w = p.w * ech;
+  // Vidéo : « il se réveille » joué une fois depuis l'apparition, puis « il te fixe » en boucle.
+  let clip = null;
+  if (clips && fx.etat === "actif") {
+    if (e < REVEIL_FIN || !clipPret(clips.regard)) {
+      clip = clips.reveil;
+      if (!fx.envoye.clipReveil) { fx.envoye.clipReveil = 1; clip.currentTime = 0; clip.play().catch(() => {}); }
+    } else {
+      clip = clips.regard;
+      if (!fx.envoye.clipRegard) { fx.envoye.clipRegard = 1; clips.reveil.pause(); clip.currentTime = 0; clip.play().catch(() => {}); }
+    }
+    if (!clipPret(clip)) clip = null;
+  }
+  const vivant = clip ? 1 : souffle;                          // la vidéo respire déjà toute seule
+  const h = p.h * ech * vivant, w = p.w * ech;
   const y = haut + (p.h * ech - h) * 0.9;                     // le souffle soulève les épaules, pas les pieds
   fx.visible = true;
-  return { x: cx + derive - w / 2, y, w, h, k, densite, dist, vacille };
+  return { x: cx + (clip ? 0 : derive) - w / 2, y, w, h, k, densite, dist, vacille, clip };
 }
 
 // Le gros plan : visage juste à côté de la tête de la personne, côté libre ; le corps de la personne passe devant.
@@ -755,11 +805,17 @@ function dessinerWatcher(v) {
     if (fx.mauvais > 10) { fx.etat = "abandon"; fx.sortie = tAppel(); envoyer("annule", { raison: "détourage incertain" }); }
   }
 
-  // 1 -> 2 : fondu additif (pas de baisse de densité au milieu du fondu)
   sortie.width = calqueW; sortie.height = calqueH;
-  sortieCtx.globalCompositeOperation = "lighter";
-  sortieCtx.globalAlpha = 1 - v.k; sortieCtx.drawImage(calques[0][grain].c, 0, 0);
-  sortieCtx.globalAlpha = v.k;     sortieCtx.drawImage(calques[1][grain].c, 0, 0);
+  if (v.clip) {
+    // la vidéo, détourée et étalonnée sur la pièce à chaque image
+    etalonner(v.clip, calqueW, calqueH, v.dist, 0.6, calqueVideo, true);
+    sortieCtx.drawImage(calqueVideo[0].c, 0, 0);
+  } else {
+    // 1 -> 2 : fondu additif (pas de baisse de densité au milieu du fondu)
+    sortieCtx.globalCompositeOperation = "lighter";
+    sortieCtx.globalAlpha = 1 - v.k; sortieCtx.drawImage(calques[0][grain].c, 0, 0);
+    sortieCtx.globalAlpha = v.k;     sortieCtx.drawImage(calques[1][grain].c, 0, 0);
+  }
   const ow = v.w * OMBRE_X, oh = v.h * OMBRE_Y;
   const ombre = { x: v.x + v.w / 2 - ow / 2, y: v.y + v.h * 0.53 - oh / 2, w: ow, h: oh };
   ctx.globalAlpha = 0.35 * v.densite;
