@@ -137,10 +137,11 @@ const PREFIXE = "watcher-v0-";
 // Chronologie, en secondes après la connexion de l'appel.
 const T = { apparition: 10, tete: 13, proche: 16, fin: 18 };
 const FONDU_ENTREE = 1.0;   // le Watcher 1 émerge en une seconde
-const BASCULE = 0.9;        // tête baissée -> tête relevée
+// 13 s : la tête se relève pendant un vacillement de lumière (voir piloter)
 const ATTENTE_MAX = 8;      // pas de place libre derrière la personne : on attend, puis on renonce
 const HAUTEUR = 0.68 * (parseFloat(new URLSearchParams(location.search).get("taille")) || 1);  // hauteur du Watcher (fraction de la vignette) ; &taille=1.2 pour régler
-const PROCHE = 0.3;         // grossissement à 16-18 s
+const SAUT = 1.45;          // à 16 s il est d'un coup beaucoup plus près
+const GEL = 0.13;           // durée d'un hoquet de caméra (image figée)
 
 const P = new URLSearchParams(location.search);
 const SALLE = P.get("r");
@@ -548,6 +549,7 @@ const baseCv = document.createElement("canvas"), baseCtx = baseCv.getContext("2d
 function nouveauxCalques() { return [0, 1, 2].map(() => { const c = document.createElement("canvas"); return { c, x: c.getContext("2d") }; }); }
 const calques = [nouveauxCalques(), nouveauxCalques()];
 let calqueW = 0, calqueH = 0, tCalque = 0;
+const ombreCv = document.createElement("canvas"), ombreCtx = ombreCv.getContext("2d");
 
 function construireCalques(lw, lh, dist) {
   calqueW = lw; calqueH = lh;
@@ -602,13 +604,20 @@ function construireCalques(lw, lh, dist) {
       x.putImageData(out, 0, 0);
     }
   }
+  // son ombre sur le mur : une tache sombre très floue qui assombrit la pièce autour de lui
+  ombreCv.width = Math.max(2, Math.round(lw / 7)); ombreCv.height = Math.max(2, Math.round(lh / 7));
+  ombreCtx.imageSmoothingQuality = "high";
+  ombreCtx.drawImage(calques[0][0].c, 0, 0, ombreCv.width, ombreCv.height);
+  ombreCtx.globalCompositeOperation = "source-in";
+  ombreCtx.fillStyle = "#000"; ombreCtx.fillRect(0, 0, ombreCv.width, ombreCv.height);
+  ombreCtx.globalCompositeOperation = "source-over";
   tCalque = performance.now();
 }
 
 // ── l'effet ──
 const fx = {};
 function reinitialiserEffet() {
-  Object.assign(fx, { etat: "attente", place: null, t0: 0, depuis: 0, raison: "", visible: false, mauvais: 0, sortie: 0, envoye: {} });
+  Object.assign(fx, { etat: "attente", place: null, t0: 0, depuis: 0, raison: "", visible: false, mauvais: 0, sortie: 0, envoye: {}, pres: null });
   piece = null; patchPrec = null;
 }
 reinitialiserEffet();
@@ -638,21 +647,48 @@ function piloter(t) {
   if (fx.etat === "actif" && e >= dTete && !fx.envoye.tete) { fx.envoye.tete = 1; envoyer("tete"); }
   if (fx.etat === "actif" && e >= dProche && !fx.envoye.proche) { fx.envoye.proche = 1; envoyer("proche"); }
 
+  // Les deux « hoquets » de la caméra : l'image se fige un instant, et quand elle repart, il a bougé.
+  if (fx.etat === "actif" && ((e >= dProche && e < dProche + GEL) || e >= dFin - GEL)) return { gel: true };
+
   const p = fx.place;
-  const k = lisse((e - dTete) / BASCULE);
-  const rap = lisse((e - dProche) / (dFin - dProche - 0.4));
-  let densite = e < dTete ? 0.97 * lisse(e / FONDU_ENTREE) : 0.97 + 0.03 * rap;
-  const ech = 1 + PROCHE * rap;
-  const dist = e < dTete ? 0.6 : 0.5 - 0.35 * rap;
+  // 13 s : la lumière vacille deux fois ; entre les deux, il a relevé la tête.
+  const dt = e - dTete;
+  const vacille = dt < 0 ? 0 : dt < 0.07 ? 0.45 : dt < 0.15 ? 0 : dt < 0.25 ? 0.35 : 0;
+  const k = dt < 0.17 ? 0 : 1;
+  let densite = e < dTete ? 0.97 * lisse(e / FONDU_ENTREE) : 1;
   if (fx.etat === "abandon") {
     densite *= 1 - lisse((t - fx.sortie) / 0.25);
     if (t - fx.sortie > 0.25) { fx.etat = "annule"; fx.visible = false; return null; }
   }
-  const h = p.h * ech, w = p.w * ech;
-  const cx = p.cx - p.cote * W * 0.025 * rap;                // il se rapproche aussi un peu de la personne
-  const y = p.haut + H * 0.01 * rap - (h - p.h) * 0.15;
+  // il respire, il oscille à peine : une image figée, c'est un sticker
+  const souffle = 1 + 0.007 * Math.sin(t * 2 * Math.PI * 0.23);
+  const derive = Math.sin(t * 2 * Math.PI * 0.09 + 1) * W * 0.003;
+  let cx = p.cx, haut = p.haut, ech = 1, dist = e < dTete ? 0.6 : 0.5;
+  if (e >= dProche) {
+    // 16 s : d'un coup, juste derrière l'épaule, en partie caché par la personne — puis il avance encore.
+    if (!fx.pres) fx.pres = placerPres(p);
+    const avance = lisse((e - dProche - GEL) / 1.6);
+    ech = fx.pres.ech * (1 + 0.07 * avance);
+    cx = fx.pres.cx - p.cote * W * 0.015 * avance;
+    haut = fx.pres.haut;
+    dist = 0.15;
+  }
+  const h = p.h * ech * souffle, w = p.w * ech;
+  const y = haut + (p.h * ech - h) * 0.9;                     // le souffle soulève les épaules, pas les pieds
   fx.visible = true;
-  return { x: cx - w / 2, y, w, h, k, densite, dist };
+  return { x: cx + derive - w / 2, y, w, h, k, densite, dist, vacille };
+}
+
+// Position « tout près » : le plus possible derrière la personne, sans jamais cacher sa tête à lui.
+function placerPres(p) {
+  const ech = SAUT, h = p.h * ech, w = p.w * ech;
+  const haut = Math.max(-H * 0.02, p.haut - (h - p.h) * 0.3);
+  for (const recul of [0.32, 0.2, 0.08, 0]) {
+    const cx = p.cx - p.cote * w * recul;
+    const c = couverture({ x: cx - w * 0.2, y: haut, w: w * 0.4, h: h * 0.15 });
+    if (c.personne < 0.1 && c.incertain < 0.3) return { cx, haut, ech };
+  }
+  return { cx: p.cx, haut: p.haut - p.h * 0.05, ech: 1.15 };
 }
 
 function dessinerWatcher(v) {
@@ -674,6 +710,10 @@ function dessinerWatcher(v) {
   sortieCtx.globalCompositeOperation = "lighter";
   sortieCtx.globalAlpha = 1 - v.k; sortieCtx.drawImage(calques[0][grain].c, 0, 0);
   sortieCtx.globalAlpha = v.k;     sortieCtx.drawImage(calques[1][grain].c, 0, 0);
+  const ow = v.w * 1.5, oh = v.h * 1.06;
+  const ombre = { x: v.x + v.w / 2 - ow / 2, y: v.y + v.h * 0.02, w: ow, h: oh };
+  ctx.globalAlpha = 0.3 * v.densite;
+  ctx.drawImage(ombreCv, ombre.x, ombre.y, ombre.w, ombre.h);
   ctx.globalAlpha = v.densite;
   ctx.drawImage(sortie, v.x, v.y, v.w, v.h);
   ctx.globalAlpha = 1;
@@ -687,9 +727,11 @@ function dessinerWatcher(v) {
   persCtx.globalCompositeOperation = "source-over";
   persCtx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.save();
-  ctx.beginPath(); ctx.rect(v.x - 6, v.y - 6, v.w + 12, v.h + 12); ctx.clip();
+  ctx.beginPath(); ctx.rect(ombre.x - 6, v.y - 6, ombre.w + 12, Math.max(v.h, ombre.h) + 12); ctx.clip();
   ctx.drawImage(persCv, 0, 0);
   ctx.restore();
+
+  if (v.vacille) { ctx.fillStyle = "rgba(0,0,0," + v.vacille + ")"; ctx.fillRect(0, 0, W, H); }
 }
 
 let fpsRendu = 0, fpsSeg = 0, tFps = performance.now(), nbR = 0, nbS = 0, tEtat = 0;
@@ -702,11 +744,13 @@ function rendu() {
   nouvelleImage = false;
   if (segmenteur) { try { segmenterImage(); } catch (e) { etatSeg = "erreur " + e.message; segmenteur = null; } }
 
+  const v = piloter(tAppel());
+  if (v && v.gel) return;               // hoquet : la vignette garde l'image précédente
+
   ctx.setTransform(-1, 0, 0, 1, W, 0);
   ctx.drawImage(cam, SRC.x, SRC.y, SRC.w, SRC.h, 0, 0, W, H);
   ctx.setTransform(1, 0, 0, 1, 0, 0);
 
-  const v = piloter(tAppel());
   if (v && segmenteur) { grain = (grain + 1) % 3; dessinerWatcher(v); }
   nbR++;
 
