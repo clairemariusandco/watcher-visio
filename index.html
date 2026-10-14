@@ -373,8 +373,16 @@ function demarrerVignette() {
   requestAnimationFrame(rendu);
 }
 
+// Zone de l'image caméra utilisée : Android livre souvent du paysage même téléphone en portrait,
+// on recadre alors au centre en 3:4 pour garder une vignette d'appel normale.
+const SRC = { x: 0, y: 0, w: 0, h: 0 };
 function dimensionner() {
-  const vw = cam.videoWidth, vh = cam.videoHeight;
+  let vw = cam.videoWidth, vh = cam.videoHeight;
+  SRC.x = 0; SRC.y = 0; SRC.w = vw; SRC.h = vh;
+  if (vw > vh && innerHeight > innerWidth) {
+    SRC.w = Math.round(vh * 3 / 4); SRC.x = Math.round((vw - SRC.w) / 2);
+    vw = SRC.w;
+  }
   const ech = 480 / Math.max(vw, vh);
   const w = Math.round(vw * ech), h = Math.round(vh * ech);
   if (w === W && h === H) return;
@@ -385,7 +393,7 @@ function dimensionner() {
 }
 
 function segmenterImage() {
-  segCtx.drawImage(cam, 0, 0, segIn.width, segIn.height);
+  segCtx.drawImage(cam, SRC.x, SRC.y, SRC.w, SRC.h, 0, 0, segIn.width, segIn.height);
   let ts = performance.now();
   if (ts <= dernierTs) ts = dernierTs + 1;
   dernierTs = ts;
@@ -673,7 +681,7 @@ function dessinerWatcher(v) {
   // la personne repasse devant
   persCtx.clearRect(0, 0, W, H);
   persCtx.setTransform(-1, 0, 0, 1, W, 0);
-  persCtx.drawImage(cam, 0, 0, W, H);
+  persCtx.drawImage(cam, SRC.x, SRC.y, SRC.w, SRC.h, 0, 0, W, H);
   persCtx.globalCompositeOperation = "destination-in";
   persCtx.drawImage(masqueCv, 0, 0, W, H);
   persCtx.globalCompositeOperation = "source-over";
@@ -695,7 +703,7 @@ function rendu() {
   if (segmenteur) { try { segmenterImage(); } catch (e) { etatSeg = "erreur " + e.message; segmenteur = null; } }
 
   ctx.setTransform(-1, 0, 0, 1, W, 0);
-  ctx.drawImage(cam, 0, 0, W, H);
+  ctx.drawImage(cam, SRC.x, SRC.y, SRC.w, SRC.h, 0, 0, W, H);
   ctx.setTransform(1, 0, 0, 1, 0, 0);
 
   const v = piloter(tAppel());
